@@ -25,7 +25,7 @@ The recommended way to install this is via HACS:
 #### Semi-manual install
 
 1. Click on HACS in the Homeassistant side bar
-2. Click on the three dots !["Three dots"](images/three_dots.png) in the upper right-hand corner and select "Custom repositories."
+2. Click on the three dots in the upper right-hand corner and select "Custom repositories."
 3. In the form enter:
 
     1. Respository: `iluvdata/pdf_scrape`
