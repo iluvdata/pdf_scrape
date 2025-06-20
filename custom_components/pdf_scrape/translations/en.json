@@ -1,0 +1,174 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "name": "Name",
+          "url": "URL of PDF",
+          "scan_interval": "Update Interval"
+        },
+        "data_description": {
+          "name": "If name not provided, the URL will be used as name",
+          "url": "URL (http: or https: only)",
+          "scan_interval": "Minimum is { min_int }s"
+        }
+      },
+      "reconfigure": {
+        "description": "URL must use http or https. Minimun update interval is { min_int }s",
+        "data": {
+          "name": "Optional name",
+          "url": "URL of PDF",
+          "scan_interval": "Update Interval"
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "Bad URL",
+      "pdf_parse": "Cannot parse PDF",
+      "http_error": "Cannot access pdf @ provided URL",
+      "invalid_source": "Accessed configuration from an invalid flow",
+      "unknown": "Unknown error"
+    },
+    "abort": {
+      "already_configured": "PDF is already configured",
+      "reconfigure_successful": "PDF Reconfiguration successful."
+    }
+  },
+  "config_subentries": {
+    "target": {
+      "initiate_flow": {
+        "user": "Add Search Target"
+      },
+      "step": {
+        "user": {
+          "title": "Target Page",
+          "description": "{ title }",
+          "data": {
+            "pdf_page": "Page"
+          },
+          "data_description": {
+            "pdf_page": "Page number in pdf to parse"
+          }
+        },
+        "reconfigure": {
+          "title": "Target Page",
+          "description": "{ title }",
+          "data": {
+            "pdf_page": "Page"
+          },
+          "data_description": {
+            "pdf_page": "Page number in pdf to parse"
+          }
+        },
+        "regex": {
+          "title": "Regular Expression",
+          "description": "Page { pdf_page }: { title }",
+          "data": {
+            "regex_search": "Python Regex",
+            "page_text": "Page Text (Reference Only)"
+          },
+          "data_description": {
+            "regex_search": "Leave blank to use all test on page"
+          }
+        },
+        "matches": {
+          "title": "Configure Sensor",
+          "data": {
+            "name": "Name",
+            "regex_match_index": "Select match",
+            "value_template": "Limited Template",
+            "unit_of_measurement": "Unit of Measurement",
+            "device_class": "Device Class",
+            "state_class": "State Class",
+            "device_id": "Device"
+          },
+          "data_description": {
+            "value_template": "Limited template support only with single variable of `value`."
+          }
+        }
+      },
+      "abort": {
+        "reconfigure_successful": "Search target configuration successful."
+      },
+      "error": {
+        "bad_pattern": "Invalid regular expression pattern (see logs)",
+        "no_matches": "No matches found. Either fix or remove the regex to proceed"
+      }
+    }
+  },
+  "selector": {
+    "sensor_device_class": {
+      "options": {
+        "apparent_power": "Apparent power",
+        "aqi": "Air quality index",
+        "area": "Area",
+        "atmospheric_pressure": "Atmospheric pressure",
+        "battery": "Battery",
+        "blood_glucose_concentration": "Blood glucose concentration",
+        "carbon_dioxide": "Carbon dioxide",
+        "carbon_monoxide": "Carbon monoxide",
+        "conductivity": "Conductivity",
+        "current": "Current",
+        "data_rate": "Data rate",
+        "data_size": "Data size",
+        "date": "Date",
+        "distance": "Distance",
+        "duration": "Duration",
+        "energy": "Energy",
+        "energy_distance": "Energy per distance",
+        "energy_storage": "Stored energy",
+        "frequency": "Frequency",
+        "gas": "Gas",
+        "humidity": "Humidity",
+        "illuminance": "Illuminance",
+        "irradiance": "Irradiance",
+        "moisture": "Moisture",
+        "monetary": "Balance",
+        "nitrogen_dioxide": "Nitrogen dioxide",
+        "nitrogen_monoxide": "Nitrogen monoxide",
+        "nitrous_oxide": "Nitrous oxide",
+        "ozone": "Ozone",
+        "ph": "pH",
+        "pm1": "PM1",
+        "pm10": "PM10",
+        "pm25": "PM2.5",
+        "power": "Power",
+        "power_factor": "Power factor",
+        "precipitation": "Precipitation",
+        "precipitation_intensity": "Precipitation intensity",
+        "pressure": "Pressure",
+        "reactive_energy": "Reactive energy",
+        "reactive_power": "Reactive power",
+        "signal_strength": "Signal strength",
+        "sound_pressure": "Sound pressure",
+        "speed": "Speed",
+        "sulphur_dioxide": "Sulphur dioxide",
+        "temperature": "Temperature",
+        "timestamp": "Timestamp",
+        "volatile_organic_compounds": "Volatile organic compounds",
+        "volatile_organic_compounds_parts": "Volatile organic compounds",
+        "voltage": "Voltage",
+        "volume": "Volume",
+        "volume_flow_rate": "Volume flow rate",
+        "volume_storage": "Stored volume",
+        "water": "Water",
+        "weight": "Weight",
+        "wind_direction": "Wind direction",
+        "wind_speed": "Wind speed"
+      }
+    },
+    "sensor_state_class": {
+      "options": {
+        "measurement": "Measurement",
+        "measurement_angle": "Measurement Angle",
+        "total": "Total",
+        "total_increasing": "Total increasing"
+      }
+    },
+    "sensor_unit_of_measurement": {
+      "options": {
+        "none": "No unit of measurement"
+      }
+    }
+  }
+}
