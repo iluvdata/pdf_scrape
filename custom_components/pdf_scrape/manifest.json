@@ -2,14 +2,12 @@
   "domain": "pdf_scrape",
   "name": "PDF Scrape",
   "issue_tracker": "https://github.com/iluvdata/pdf_scrpae/issues",
-  "codeowners": [
-    "@iluvdata"
-  ],
+  "codeowners": ["@iluvdata"],
   "dependencies": [],
   "config_flow": true,
   "documentation": "https://github.com/iluvdata/pdf_scrape",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
   "requirements": ["pypdf~=5.2.0"],
-  "version": "1.2"
+  "version": "2025.06.20"
 }

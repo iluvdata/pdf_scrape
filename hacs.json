@@ -1,6 +1,5 @@
 {
   "name": "PDF Scrape",
   "country": "US",
-  "homeassistant": "2025.06.01",
-  "version": "1.0.0"
+  "homeassistant": "2025.06.01"
 }
