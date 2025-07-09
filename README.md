@@ -1,4 +1,5 @@
-# PDFScrape Integration
+# ![PDFScrape Logo](logo.svg) Integration
+
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg?style=flat-square&logo=homeassistantcommunitystore)](https://hacs.xyz/)
 ![GitHub Release](https://img.shields.io/github/v/release/iluvdata/pdf_scrape)
@@ -12,7 +13,7 @@ Configuration via Homeassistant UI.
 
 Homeassistant core: ≥2025.6.0
 
-Homeassistant frontend: TBD
+Homeassistant frontend: dev
 
 ## Installation with HACS
 
