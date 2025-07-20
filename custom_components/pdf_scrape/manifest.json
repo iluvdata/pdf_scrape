@@ -9,5 +9,5 @@
   "integration_type": "hub",
   "iot_class": "cloud_polling",
   "requirements": ["pypdf~=5.2.0"],
-  "version": "2025.6.20"
+  "version": "2025.7.1"
 }
