@@ -11,9 +11,8 @@ Configuration via Homeassistant UI.
 
 ## Requirements
 
-Homeassistant core: ≥2025.6.0
+![Dynamic JSON Badge](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Filuvdata%2Fpdf_scrape%2Frefs%2Fheads%2Fmain%2Fhacs.json&query=%24.homeassistant&prefix=%E2%89%A5&label=Home%20Assistant&labelColor=blue&color=orange)
 
-Homeassistant frontend: dev
 
 ## Installation with HACS
 
