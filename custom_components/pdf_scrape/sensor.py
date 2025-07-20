@@ -1,11 +1,14 @@
 """PDFScrape Sensor."""
 
-from typing import Any
+from datetime import date, datetime
+from decimal import Decimal
 
 from homeassistant.components.sensor import (
     CONF_STATE_CLASS,
     ENTITY_ID_FORMAT,
     SensorEntity,
+    StateType,
+    cached_property,
 )
 from homeassistant.const import CONF_DEVICE_CLASS, CONF_UNIT_OF_MEASUREMENT
 from homeassistant.core import HomeAssistant, callback
@@ -36,7 +39,7 @@ async def async_setup_entry(
         async_add_entities(entity, config_subentry_id=subentry_config_key)
 
 
-class PDFScrapeSensor(CoordinatorEntity, SensorEntity):
+class PDFScrapeSensor(CoordinatorEntity, SensorEntity):  # type: ignore[reportIncompatibleVariableOverride]
     """PDFScrape Sensor Entity."""
 
     def __init__(
@@ -52,6 +55,7 @@ class PDFScrapeSensor(CoordinatorEntity, SensorEntity):
             raise HomeAssistantError(
                 f"Subentry config not found: {subentry_config_key}"
             )
+        self.subentry_config_key = subentry_config_key
         self._attr_name = self.subentry_config.title
         self._attr_native_unit_of_measurement = self.subentry_config.data.get(
             CONF_UNIT_OF_MEASUREMENT
@@ -79,16 +83,16 @@ class PDFScrapeSensor(CoordinatorEntity, SensorEntity):
         """Handle updated data from the coordinator."""
         self.async_write_ha_state()
 
-    @property
-    def native_value(self) -> str:
-        """Return the current value of the sensor."""
-        return self.coordinator.data[self.subentry_config.subentry_id]["txt"]
+    @cached_property
+    def native_value(self) -> StateType | date | datetime | Decimal:
+        """Return the state of the sensor."""
+        value: str = self.coordinator.data[self.subentry_config_key]["txt"]
+        return value if len(value) < 255 else value[:242] + " <truncated>"
 
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the extra attributes for the state."""
+    @cached_property
+    def extra_state_attributes(self) -> dict[str, str | None]:
+        """Return the state attributes of the sensor."""
+        modified: datetime = self.coordinator.data[self.subentry_config_key]["modified"]
         return {
-            "last_modified": self.coordinator.data[self.subentry_config.subentry_id][
-                "modified"
-            ]
+            "last_modified": modified.isoformat() if modified else None,
         }

@@ -5,7 +5,7 @@ from datetime import timedelta
 import logging
 from logging import Logger
 import re
-from typing import Any
+from typing import Any, cast
 
 import voluptuous as vol
 
@@ -18,19 +18,13 @@ from homeassistant.components.sensor import (
     SensorStateClass,
     StateType,
 )
-
-# pylint: disable-next=hass-component-root-import
-from homeassistant.components.template.config_flow import (
-    _validate_state_class,
-    _validate_unit,
-)
+from homeassistant.components.template import config_flow
 from homeassistant.config_entries import (
     SOURCE_RECONFIGURE,
     SOURCE_USER,
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
-    ConfigSubentry,
     ConfigSubentryFlow,
     SubentryFlowResult,
 )
@@ -100,7 +94,10 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle config flow."""
         errors: dict[str, str] = {}
         if user_input:
-            interval: int = timedelta(**user_input[CONF_SCAN_INTERVAL]).total_seconds()
+            td: dict[str, int] = user_input.get(
+                CONF_SCAN_INTERVAL, {"seconds": CONF_DEFAULT_SCAN_INTERVAL}
+            )
+            interval: int = int(timedelta(**td).total_seconds())
             if interval < CONF_MIN_SCAN_INTERVAL:
                 errors["base"] = "min_interval"
             else:
@@ -115,7 +112,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
                     )
                     data: dict[str, Any] = {
                         CONF_URL: user_input[CONF_URL],
-                        CONF_SCAN_INTERVAL: interval,
+                        CONF_SCAN_INTERVAL: td,
                     }
                     if user_input.get(CONF_NAME):
                         data[CONF_NAME] = user_input[CONF_NAME]
@@ -135,7 +132,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
                         # self._abort_if_unique_id_mismatch()
                         return self.async_update_reload_and_abort(
                             self._get_reconfigure_entry(),
-                            data_updates=user_input,
+                            data=data,
                         )
                     _LOGGER.error("Accessed from invalid source: %s", self.source)
                     errors["base"] = "invalid_source"
@@ -146,36 +143,31 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
                 except HTTPError as err:
                     _LOGGER.warning("HTTP Error %s", err)
                     errors["base"] = "http_error"
-        defaults: dict[str, str] = {}
-        if self.source == SOURCE_RECONFIGURE:
-            config_entry: ConfigEntry = self._get_reconfigure_entry()
-            defaults[CONF_NAME] = config_entry.data.get(CONF_NAME)
-            defaults[CONF_URL] = config_entry.data.get(CONF_URL)
-            defaults[CONF_SCAN_INTERVAL] = config_entry.data.get(CONF_SCAN_INTERVAL)
-        defaults[CONF_SCAN_INTERVAL] = defaults.get(
-            CONF_SCAN_INTERVAL, CONF_DEFAULT_SCAN_INTERVAL
-        )
         flow_schema: vol.Schema = vol.Schema(
             {
-                vol.Optional(
-                    CONF_NAME, default=defaults.get(CONF_NAME)
-                ): TextSelector(),
-                vol.Required(CONF_URL, default=defaults.get(CONF_URL)): TextSelector(
+                vol.Optional(CONF_NAME): TextSelector(),
+                vol.Required(CONF_URL): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.URL)
                 ),
-                vol.Required(
-                    CONF_SCAN_INTERVAL,
-                    default={"seconds": defaults.get(CONF_SCAN_INTERVAL)},
-                ): DurationSelector(
+                vol.Required(CONF_SCAN_INTERVAL): DurationSelector(
                     DurationSelectorConfig(enable_day=False, allow_negative=False)
                 ),
             }
         )
+        if self.source == SOURCE_RECONFIGURE:
+            flow_schema = self.add_suggested_values_to_schema(
+                flow_schema, self._get_reconfigure_entry().data
+            )
+        else:
+            flow_schema = self.add_suggested_values_to_schema(
+                flow_schema,
+                {CONF_SCAN_INTERVAL: {"seconds": CONF_DEFAULT_SCAN_INTERVAL}},
+            )
         return self.async_show_form(
             data_schema=flow_schema,
             errors=errors,
             description_placeholders={
-                "min_int": CONF_MIN_SCAN_INTERVAL,
+                "min_int": str(CONF_MIN_SCAN_INTERVAL),
             },
         )
 
@@ -204,24 +196,25 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
     ) -> SubentryFlowResult:
         """Get Page."""
         if user_input:
-            self.data[CONF_PDF_PAGE] = int(user_input.get(CONF_PDF_PAGE))
+            self.data[CONF_PDF_PAGE] = int(user_input[CONF_PDF_PAGE])
             return await self.async_step_regex(None)
 
-        pages: int = len(self._get_entry().runtime_data.coordinator.pdf.pages)
+        config_entry: PDFScrapeConfigEntry = self._get_entry()
+        pages: int = len(config_entry.runtime_data.coordinator.pdf.pages)
         opts: list[SelectOptionDict] = [
             SelectOptionDict({"value": str(i), "label": f"{i + 1}"})
             for i in range(pages)
         ]
 
-        default_page: int = 0
+        default_page: str = "0"
         if self.source == SOURCE_RECONFIGURE:
-            default_page = self._get_reconfigure_subentry().data.get(CONF_PDF_PAGE, 0)
+            default_page = str(
+                self._get_reconfigure_subentry().data.get(CONF_PDF_PAGE, 0)
+            )
         return self.async_show_form(
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        CONF_PDF_PAGE, default=str(default_page)
-                    ): SelectSelector(
+                    vol.Required(CONF_PDF_PAGE, default=default_page): SelectSelector(
                         SelectSelectorConfig(
                             options=opts, mode=SelectSelectorMode.DROPDOWN
                         )
@@ -245,9 +238,9 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Get the regex."""
-        errors: dict[str, str] = []
+        errors: dict[str, str] = {}
         pdf: PDFScrape = self._get_entry().runtime_data.coordinator.pdf
-        pdf_page: int = self.data.get(CONF_PDF_PAGE)
+        pdf_page: int = self.data[CONF_PDF_PAGE]
         text: str = pdf.pages[pdf_page]
 
         if user_input and user_input.get(CONF_REGEX_SEARCH):
@@ -268,26 +261,26 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
             # User wants all the txt.
             return await self.async_step_matches(None)
 
-        defaults: dict[str, str] = {}
+        schema: vol.Schema = vol.Schema(
+            {
+                vol.Optional(CONF_REGEX_SEARCH): TextSelector(
+                    TextSelectorConfig(multiline=True)
+                ),
+                vol.Required("page_text", default=text): TextSelector(
+                    TextSelectorConfig(multiline=True)
+                ),
+            }
+        )
         if self.source == SOURCE_RECONFIGURE:
-            subentry_conf: ConfigSubentry = self._get_reconfigure_subentry()
-            defaults[CONF_REGEX_SEARCH] = subentry_conf.data.get(CONF_REGEX_SEARCH)
-
+            schema = self.add_suggested_values_to_schema(
+                schema, self._get_reconfigure_subentry().data
+            )
         return self.async_show_form(
             step_id="regex",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_REGEX_SEARCH, default=defaults.get(CONF_REGEX_SEARCH)
-                    ): TextSelector(TextSelectorConfig(multiline=True)),
-                    vol.Required("page_text", default=text): TextSelector(
-                        TextSelectorConfig(multiline=True)
-                    ),
-                }
-            ),
+            data_schema=schema,
             description_placeholders={
                 "title": self._get_entry().title,
-                CONF_PDF_PAGE: pdf_page + 1,
+                CONF_PDF_PAGE: str(pdf_page + 1),
             },
             last_step=False,
             errors=errors,
@@ -301,36 +294,29 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
         errors: dict[str, str] = {}
 
         pdf: PDFScrape = self._get_entry().runtime_data.coordinator.pdf
-        pdf_page: int = self.data.get(CONF_PDF_PAGE)
+        pdf_page: int = self.data[CONF_PDF_PAGE]
         text: str = pdf.pages[pdf_page]
 
-        pattern: str = self.data.get(CONF_REGEX_SEARCH)
+        pattern: str | None = self.data.get(CONF_REGEX_SEARCH)
         matches: list[str] = re.findall(pattern, text) if pattern else []
 
         if user_input:
-            if not user_input.get(CONF_NAME):
-                errors[CONF_NAME] = "Name is required."
-            if value_temp := user_input.get(CONF_VALUE_TEMPLATE):
+            value: str = (
+                matches[int(user_input[CONF_REGEX_MATCH_INDEX])]
+                if matches
+                else pdf.pages[pdf_page]
+            )
+            preview: PreviewEntity | None = None
+            errors, preview = _validate_step_matches(
+                self.hass, config=user_input, value=value
+            )
+            if preview:
                 try:
-                    val_tmp: Template = Template(value_temp, self.hass)
-                    variables: TemplateVarsType = {
-                        "value": matches[int(user_input[CONF_REGEX_MATCH_INDEX])]
-                    }
-                    val_tmp.async_render(
-                        variables=variables, parse_result=False, limited=True
-                    )
-                except vol.Invalid as ex:
-                    errors[CONF_VALUE_TEMPLATE] = str(ex.msg)
-                except TemplateError as ex:
-                    errors[CONF_VALUE_TEMPLATE] = str(ex.msg)
-            try:
-                _validate_unit(user_input)
-            except vol.Invalid as ex:
-                errors[CONF_UNIT_OF_MEASUREMENT] = str(ex.msg)
-            try:
-                _validate_state_class(user_input)
-            except vol.Invalid as ex:
-                errors[CONF_STATE_CLASS] = str(ex.msg)
+                    preview.async_calculate_state()
+                except ValueError as ex:
+                    errors["base"] = str(ex)
+                    if len(errors["base"]) > 255:
+                        errors["base"] = errors["base"][:255] + " <truncated>"
             if not errors:
                 if self.source != SOURCE_RECONFIGURE:
                     config_id: str = str(len(self._get_entry().subentries))
@@ -342,11 +328,11 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                 return self.async_update_and_abort(
                     self._get_entry(),
                     self._get_reconfigure_subentry(),
-                    title=user_input.get(CONF_NAME),
-                    data_updates=self.data | user_input,
+                    title=user_input[CONF_NAME],
+                    data=self.data | user_input,
                 )
 
-        opts: list[SelectOptionDict] = None
+        opts: list[SelectOptionDict] = []
 
         if len(matches) > 0:
             opts = [
@@ -354,39 +340,18 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                 for i in range(len(matches))
             ]
 
-        defaults: dict[str, str] = {}
-        if self.source == SOURCE_RECONFIGURE:
-            subentry_conf: ConfigSubentry = self._get_reconfigure_subentry()
-            defaults[CONF_NAME] = subentry_conf.data.get(CONF_NAME)
-            defaults[CONF_REGEX_MATCH_INDEX] = subentry_conf.data.get(
-                CONF_REGEX_MATCH_INDEX
-            )
-            defaults[CONF_VALUE_TEMPLATE] = subentry_conf.data.get(CONF_VALUE_TEMPLATE)
-            defaults[CONF_STATE_CLASS] = subentry_conf.data.get(CONF_STATE_CLASS)
-            defaults[CONF_UNIT_OF_MEASUREMENT] = subentry_conf.data.get(
-                CONF_UNIT_OF_MEASUREMENT
-            )
-            defaults[CONF_DEVICE_CLASS] = subentry_conf.data.get(CONF_DEVICE_CLASS)
-
-        step_schema = {
-            vol.Required(CONF_NAME, default=defaults.get(CONF_NAME)): TextSelector()
-        }
+        step_schema = {vol.Required(CONF_NAME): TextSelector()}
 
         if opts:
             step_schema = step_schema | {
-                vol.Required(
-                    CONF_REGEX_MATCH_INDEX, default=defaults.get(CONF_REGEX_MATCH_INDEX)
-                ): SelectSelector(
+                vol.Required(CONF_REGEX_MATCH_INDEX): SelectSelector(
                     SelectSelectorConfig(options=opts, mode=SelectSelectorMode.DROPDOWN)
                 )
             }
+
         step_schema = step_schema | {
-            vol.Optional(
-                CONF_VALUE_TEMPLATE, default=defaults.get(CONF_VALUE_TEMPLATE, "")
-            ): TemplateSelector(),
-            vol.Optional(
-                CONF_UNIT_OF_MEASUREMENT, default=defaults.get(CONF_UNIT_OF_MEASUREMENT)
-            ): SelectSelector(
+            vol.Optional(CONF_VALUE_TEMPLATE): TemplateSelector(),
+            vol.Optional(CONF_UNIT_OF_MEASUREMENT): SelectSelector(
                 SelectSelectorConfig(
                     options=list(
                         {
@@ -401,9 +366,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                     sort=True,
                 ),
             ),
-            vol.Optional(
-                CONF_DEVICE_CLASS, default=defaults.get(CONF_DEVICE_CLASS)
-            ): SelectSelector(
+            vol.Optional(CONF_DEVICE_CLASS): SelectSelector(
                 SelectSelectorConfig(
                     options=[
                         cls.value
@@ -415,9 +378,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                     translation_key="sensor_device_class",
                 ),
             ),
-            vol.Optional(
-                CONF_STATE_CLASS, default=defaults.get(CONF_STATE_CLASS)
-            ): SelectSelector(
+            vol.Optional(CONF_STATE_CLASS): SelectSelector(
                 SelectSelectorConfig(
                     options=[cls.value for cls in SensorStateClass],
                     mode=SelectSelectorMode.DROPDOWN,
@@ -426,10 +387,16 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                 ),
             ),
         }
+        if self.source == SOURCE_RECONFIGURE:
+            schema: vol.Schema = self.add_suggested_values_to_schema(
+                vol.Schema(step_schema), self._get_reconfigure_subentry().data
+            )
+        else:
+            schema: vol.Schema = vol.Schema(step_schema)
 
         return self.async_show_form(
             step_id="matches",
-            data_schema=vol.Schema(step_schema),
+            data_schema=schema,
             last_step=True,
             errors=errors,
             preview="target",
@@ -455,9 +422,11 @@ def ws_start_preview(
     if msg["flow_type"] != "config_subentries_flow":
         raise HomeAssistantError("invalid_flow")
         # Get the config flow status
-    flow_status = hass.config_entries.subentries.async_get(msg["flow_id"])
+    flow_status: SubentryFlowResult = hass.config_entries.subentries.async_get(
+        msg["flow_id"]
+    )
     # Step: i.e. user, regex, etc
-    step = flow_status["step_id"]
+    step: str | None = flow_status.get("step_id")
     config_entry: PDFScrapeConfigEntry = hass.config_entries.async_get_known_entry(
         flow_status["handler"][0]
     )
@@ -491,16 +460,18 @@ def ws_start_preview(
 
     page: int = 0
     value: str = ""
-    flow: TargetSubentryFlowHandler = hass.config_entries.subentries._progress.get(  # noqa: SLF001
-        msg["flow_id"]
+    flow = cast(
+        TargetSubentryFlowHandler,
+        hass.config_entries.subentries._progress.get(msg["flow_id"]),  # noqa: SLF001
     )
+    preview: PreviewEntity | None = None
     if step in ["user", "reconfigure"]:
         user_input[CONF_NAME] = "Page Text"
         user_input[CONF_ICON] = "mdi:file-pdf-box"
         page = int(user_input[CONF_PDF_PAGE])
         value = pdf.pages[page - 1]
     else:
-        page = flow.data.get(CONF_PDF_PAGE)
+        page = flow.data[CONF_PDF_PAGE]
         if step == "regex":
             pattern: str | None = user_input.get(CONF_REGEX_SEARCH)
             if pattern:
@@ -530,34 +501,18 @@ def ws_start_preview(
                 value = pdf.pages[page]
         elif step == "matches":
             # Generate preview
-            regex: str = flow.data.get(CONF_REGEX_SEARCH)
+            regex: str | None = flow.data.get(CONF_REGEX_SEARCH)
             if regex:
                 matches: list[str] = re.findall(
                     regex,
                     pdf.pages[page],
                 )
-                value = matches[int(user_input.get(CONF_REGEX_MATCH_INDEX))]
+                value = matches[int(user_input[CONF_REGEX_MATCH_INDEX])]
             else:
                 value = pdf.pages[page]
-            if user_input.get(CONF_VALUE_TEMPLATE):
-                try:
-                    value_temp: Template = Template(
-                        user_input.get(CONF_VALUE_TEMPLATE), hass
-                    )
-                    variables: TemplateVarsType = {"value": value}
-                    value = value_temp.async_render(
-                        variables=variables, parse_result=False, limited=True
-                    )
-                except vol.Invalid as ex:
-                    errors[CONF_VALUE_TEMPLATE] = str(ex.msg)
-            try:
-                _validate_unit(user_input)
-            except vol.Invalid as ex:
-                errors[CONF_UNIT_OF_MEASUREMENT] = str(ex.msg)
-            try:
-                _validate_state_class(user_input)
-            except vol.Invalid as ex:
-                errors[CONF_STATE_CLASS] = str(ex.msg)
+            errors, preview = _validate_step_matches(
+                hass, config=user_input, value=value
+            )
         else:
             return
 
@@ -572,11 +527,12 @@ def ws_start_preview(
         )
         return
 
-    preview_entity: PreviewEntity = PreviewEntity(hass, config=user_input, value=value)
+    if not preview:
+        preview = PreviewEntity(hass, config=user_input, value=value)
 
     connection.send_result(msg["id"])
 
-    connection.subscriptions[msg["id"]] = preview_entity.async_start_preview(
+    connection.subscriptions[msg["id"]] = preview.async_start_preview(
         async_preview_updated
     )
 
@@ -585,12 +541,14 @@ class PreviewEntity(SensorEntity):
     """Preview entity for frontend."""
 
     def __init__(
-        self, hass: HomeAssistant, config: dict[str, Any] | None, value: StateType
+        self, hass: HomeAssistant, config: dict[str, Any], value: StateType
     ) -> None:
         """Initialize a preview entity."""
 
         self.hass: HomeAssistant = hass
-        self._attr_name = config.get(CONF_NAME, "Preview")
+        self._attr_name = (
+            config.get(CONF_NAME) if config.get(CONF_NAME) is not None else "Preview"
+        )
         self._attr_device_class = config.get(CONF_DEVICE_CLASS)
         self._attr_native_unit_of_measurement = config.get(CONF_UNIT_OF_MEASUREMENT)
         self._attr_state_class = config.get(CONF_STATE_CLASS)
@@ -598,8 +556,12 @@ class PreviewEntity(SensorEntity):
         self._attr_native_value = (
             value
             if not isinstance(value, str)
-            else (value if len(value) < 255 else value[:255] + " ***truncated***")
+            else (value if len(value) < 255 else value[:242] + "  <truncated>")
         )
+
+    def async_calculate_state(self) -> CalculatedState:
+        """Calculate the state of the sensor."""
+        return self._async_calculate_state()
 
     @callback
     def async_start_preview(
@@ -615,10 +577,51 @@ class PreviewEntity(SensorEntity):
         ],
     ) -> CALLBACK_TYPE:
         """Render a preview."""
-
-        calculated_state: CalculatedState = self._async_calculate_state()
-        preview_callback(
-            calculated_state.state, calculated_state.attributes, None, None
-        )
+        errors: str | None = None
+        try:
+            calculated_state: CalculatedState = self.async_calculate_state()
+            preview_callback(
+                calculated_state.state, calculated_state.attributes, None, None
+            )
+        except ValueError as ex:
+            errors = str(ex)
+            if len(errors) > 255:
+                errors = errors[:242] + " <truncated>"
+        if errors:
+            preview_callback(None, None, None, errors)
 
         return self._call_on_remove_callbacks
+
+
+def _validate_step_matches(
+    hass: HomeAssistant, config: dict[str, Any], value: str
+) -> tuple[dict[str, str], PreviewEntity | None]:
+    """Validate the matches step."""
+    errors: dict[str, str] = {}
+    if not config.get(CONF_NAME):
+        errors[CONF_NAME] = "Name is required."
+    if value_temp := config.get(CONF_VALUE_TEMPLATE):
+        try:
+            val_tmp: Template = Template(value_temp, hass)
+            variables: TemplateVarsType = {"value": value}
+            value = val_tmp.async_render(
+                variables=variables, parse_result=False, limited=True
+            )
+        except vol.Invalid as ex:
+            errors[CONF_VALUE_TEMPLATE] = str(ex.msg)
+        except TemplateError as ex:
+            errors[CONF_VALUE_TEMPLATE] = str(ex)
+    # Validate the unit of measurement
+    try:
+        config_flow._validate_unit(config)  # noqa: SLF001
+    except vol.Invalid as ex:
+        errors[CONF_UNIT_OF_MEASUREMENT] = str(ex.msg)
+    # Validate the state class
+    try:
+        config_flow._validate_state_class(config)  # noqa: SLF001
+    except vol.Invalid as ex:
+        errors[CONF_STATE_CLASS] = str(ex.msg)
+    if errors:
+        return errors, None
+    preview: PreviewEntity = PreviewEntity(hass, config=config, value=value)
+    return errors, preview

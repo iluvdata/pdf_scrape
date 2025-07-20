@@ -68,7 +68,7 @@
             "page_text": "Page Text (Reference Only)"
           },
           "data_description": {
-            "regex_search": "Leave blank to use all test on page"
+            "regex_search": "Leave blank to use all text on selected page"
           }
         },
         "matches": {
@@ -83,7 +83,7 @@
             "device_id": "Device"
           },
           "data_description": {
-            "value_template": "Limited template support only with single variable of `value`."
+            "value_template": "Limited template support only with a single variable of `value`."
           }
         }
       },
@@ -92,13 +92,14 @@
       },
       "error": {
         "bad_pattern": "Invalid regular expression pattern (see logs)",
-        "no_matches": "No matches found. Either fix or remove the regex to proceed"
+        "no_matches": "No matches found. Either fix or remove the regex to proceed."
       }
     }
   },
   "selector": {
     "sensor_device_class": {
       "options": {
+        "absolute_humidity": "Absolute humidity",
         "apparent_power": "Apparent power",
         "aqi": "Air quality index",
         "area": "Area",

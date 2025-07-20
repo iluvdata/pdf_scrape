@@ -4,7 +4,7 @@ from datetime import datetime
 from io import BytesIO
 
 from aiohttp import ClientConnectorError, ClientResponseError, ClientSession
-from pypdf import PdfReader
+from pypdf import DocumentInformation, PdfReader
 from pypdf.errors import PyPdfError
 
 
@@ -14,8 +14,8 @@ class PDFScrape:
     def __init__(self) -> None:
         """Don't call as has classmethod."""
         self.pages: list[str] = []
-        self.url: str = None
-        self.modified: datetime = None
+        self.url: str
+        self.modified: datetime | None = None
 
     @classmethod
     async def pdfscrape(cls, url: str):
@@ -33,7 +33,9 @@ class PDFScrape:
                 stream = BytesIO(await resp.read())
                 pdfr: PdfReader = PdfReader(stream)
                 self.pages = [page.extract_text() for page in pdfr.pages]
-                self.modified = pdfr.metadata.modification_date
+                metadata: DocumentInformation | None = pdfr.metadata
+                if metadata:
+                    self.modified = metadata.modification_date
                 pdfr.close()
                 stream.close()
         except PyPdfError as err:
