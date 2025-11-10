@@ -1,6 +1,8 @@
 """PDF Scrape Integration."""
 
-from dataclasses import dataclass
+import logging
+
+from homeassistant.components.hassio import async_get_clientsession
 
 # import aiohttp
 from homeassistant.config_entries import ConfigEntry
@@ -9,19 +11,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers.device_registry import DeviceEntry
 
-from .coordinator import PDFScrapeCoordinator
+from .const import DOMAIN
+from .coordinator import PDFScrapeConfigEntry, PDFScrapeCoordinator
 from .pdf import HTTPError, PDFParseError, PDFScrape
 
 _PLATFORMS: list[Platform] = [Platform.SENSOR]
 
-type PDFScrapeConfigEntry = ConfigEntry[RuntimeData]
-
-
-@dataclass
-class RuntimeData:
-    """Class to hold data."""
-
-    coordinator: PDFScrapeCoordinator
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -29,7 +25,9 @@ async def async_setup_entry(
 ) -> bool:
     """Set up the config entry."""
     try:
-        pdf: PDFScrape = await PDFScrape.pdfscrape(config_entry.data[CONF_URL])
+        pdf: PDFScrape = await PDFScrape.pdfscrape(
+            config_entry.data[CONF_URL], async_get_clientsession(hass)
+        )
 
         coordinator: PDFScrapeCoordinator = PDFScrapeCoordinator(
             hass, config_entry, pdf
@@ -41,15 +39,25 @@ async def async_setup_entry(
             config_entry.add_update_listener(_async_update_listener)
         )
 
-        config_entry.runtime_data = RuntimeData(coordinator)
+        config_entry.runtime_data = coordinator
 
         await hass.config_entries.async_forward_entry_setups(config_entry, _PLATFORMS)
 
-    except PDFParseError as err:
-        raise ConfigEntryError from err
+    except PDFParseError as ex:
+        _LOGGER.exception("Unable to parse_pdf: %s", config_entry.data[CONF_URL])
+        raise ConfigEntryError(
+            translation_domain=DOMAIN,
+            translation_key="unable_to_parse",
+            translation_placeholders={"exc": str(ex)},
+        ) from ex
 
-    except HTTPError as err:
-        raise ConfigEntryError(err.msg) from err
+    except HTTPError as ex:
+        _LOGGER.exception("Unable to access: %s", config_entry.data[CONF_URL])
+        raise ConfigEntryError(
+            translation_domain=DOMAIN,
+            translation_key="http_error",
+            translation_placeholders={"exc": str(ex)},
+        ) from ex
 
     return True
 
@@ -63,12 +71,11 @@ async def _async_update_listener(
 
 
 async def async_remove_config_entry_device(
-    hass: HomeAssistant, config_entry: ConfigEntry, device_entry: DeviceEntry
+    hass: HomeAssistant,
+    config_entry: PDFScrapeConfigEntry,
+    device_entry: DeviceEntry,
 ) -> bool:
     """Delete device if selected from UI."""
-    # Adding this function shows the delete device option in the UI.
-    # Remove this function if you do not want that option.
-    # You may need to do some checks here before allowing devices to be removed.
     return True
 
 

@@ -16,7 +16,6 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorStateClass,
-    StateType,
 )
 from homeassistant.components.template import config_flow
 from homeassistant.config_entries import (
@@ -94,25 +93,22 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle config flow."""
         errors: dict[str, str] = {}
         if user_input:
-            td: dict[str, int] = user_input.get(
-                CONF_SCAN_INTERVAL, {"seconds": CONF_DEFAULT_SCAN_INTERVAL}
+            td: timedelta = (
+                timedelta(**user_input[CONF_SCAN_INTERVAL])
+                if CONF_SCAN_INTERVAL in user_input
+                else CONF_DEFAULT_SCAN_INTERVAL
             )
-            interval: int = int(timedelta(**td).total_seconds())
-            if interval < CONF_MIN_SCAN_INTERVAL:
+            if td < CONF_MIN_SCAN_INTERVAL:
                 errors["base"] = "min_interval"
             else:
                 try:
                     url(user_input[CONF_URL])
                     await PDFScrape.pdfscrape(user_input[CONF_URL])
                     # Store the token in the config entry data
-                    title: str = (
-                        user_input[CONF_NAME] + " - " + user_input[CONF_URL]
-                        if user_input.get(CONF_NAME)
-                        else user_input[CONF_URL]
-                    )
+                    title: str = user_input.get(CONF_NAME, user_input[CONF_URL])
                     data: dict[str, Any] = {
                         CONF_URL: user_input[CONF_URL],
-                        CONF_SCAN_INTERVAL: td,
+                        CONF_SCAN_INTERVAL: {"seconds": td.total_seconds()},
                     }
                     if user_input.get(CONF_NAME):
                         data[CONF_NAME] = user_input[CONF_NAME]
@@ -132,6 +128,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
                         # self._abort_if_unique_id_mismatch()
                         return self.async_update_reload_and_abort(
                             self._get_reconfigure_entry(),
+                            title=title,
                             data=data,
                         )
                     _LOGGER.error("Accessed from invalid source: %s", self.source)
@@ -161,7 +158,11 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
         else:
             flow_schema = self.add_suggested_values_to_schema(
                 flow_schema,
-                {CONF_SCAN_INTERVAL: {"seconds": CONF_DEFAULT_SCAN_INTERVAL}},
+                {
+                    CONF_SCAN_INTERVAL: {
+                        "seconds": CONF_DEFAULT_SCAN_INTERVAL.total_seconds()
+                    }
+                },
             )
         return self.async_show_form(
             data_schema=flow_schema,
@@ -200,7 +201,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
             return await self.async_step_regex(None)
 
         config_entry: PDFScrapeConfigEntry = self._get_entry()
-        pages: int = len(config_entry.runtime_data.coordinator.pdf.pages)
+        pages: int = len(config_entry.runtime_data.pdf.pages)
         opts: list[SelectOptionDict] = [
             SelectOptionDict({"value": str(i), "label": f"{i + 1}"})
             for i in range(pages)
@@ -239,7 +240,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
     ) -> SubentryFlowResult:
         """Get the regex."""
         errors: dict[str, str] = {}
-        pdf: PDFScrape = self._get_entry().runtime_data.coordinator.pdf
+        pdf: PDFScrape = self._get_entry().runtime_data.pdf
         pdf_page: int = self.data[CONF_PDF_PAGE]
         text: str = pdf.pages[pdf_page]
 
@@ -293,7 +294,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
         """Get the regex."""
         errors: dict[str, str] = {}
 
-        pdf: PDFScrape = self._get_entry().runtime_data.coordinator.pdf
+        pdf: PDFScrape = self._get_entry().runtime_data.pdf
         pdf_page: int = self.data[CONF_PDF_PAGE]
         text: str = pdf.pages[pdf_page]
 
@@ -306,13 +307,13 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                 if matches
                 else pdf.pages[pdf_page]
             )
-            preview: PreviewEntity | None = None
+            preview: PreviewSensorEntity | None = None
             errors, preview = _validate_step_matches(
                 self.hass, config=user_input, value=value
             )
             if preview:
                 try:
-                    preview.async_calculate_state()
+                    preview._async_calculate_state()  # noqa: SLF001
                 except ValueError as ex:
                     errors["base"] = str(ex)
                     if len(errors["base"]) > 255:
@@ -432,7 +433,7 @@ def ws_start_preview(
     )
     if not config_entry:
         raise HomeAssistantError
-    pdf: PDFScrape = config_entry.runtime_data.coordinator.pdf
+    pdf: PDFScrape = config_entry.runtime_data.pdf
 
     errors: dict[str, str] = {}
 
@@ -459,12 +460,12 @@ def ws_start_preview(
         )
 
     page: int = 0
-    value: str = ""
+    value: str | list[str] = ""
     flow = cast(
         TargetSubentryFlowHandler,
         hass.config_entries.subentries._progress.get(msg["flow_id"]),  # noqa: SLF001
     )
-    preview: PreviewEntity | None = None
+    preview: PreviewSensorEntity | None = None
     if step in ["user", "reconfigure"]:
         user_input[CONF_NAME] = "Page Text"
         user_input[CONF_ICON] = "mdi:file-pdf-box"
@@ -482,14 +483,12 @@ def ws_start_preview(
                         user_input[CONF_REGEX_SEARCH],
                         pdf.pages[page],
                     )
-                    if len(matches):
-                        value = ", ".join(
-                            [
-                                "{" + str(i + 1) + ": " + matches[i] + "}"
-                                for i in range(len(matches))
-                            ]
-                        )
+                    if len(matches) > 1:
                         user_input[CONF_NAME] = f"{len(matches)} Matches"
+                        value = " ^ ".join(matches)
+                    elif len(matches) == 1:
+                        value = matches[0]
+                        user_input[CONF_NAME] = "1 Match"
                     else:
                         value = "No matches found."
                         user_input[CONF_NAME] = "?"
@@ -528,7 +527,7 @@ def ws_start_preview(
         return
 
     if not preview:
-        preview = PreviewEntity(hass, config=user_input, value=value)
+        preview = PreviewSensorEntity(hass, config=user_input, value=value)
 
     connection.send_result(msg["id"])
 
@@ -537,18 +536,14 @@ def ws_start_preview(
     )
 
 
-class PreviewEntity(SensorEntity):
+class PreviewSensorEntity(SensorEntity):
     """Preview entity for frontend."""
 
-    def __init__(
-        self, hass: HomeAssistant, config: dict[str, Any], value: StateType
-    ) -> None:
+    def __init__(self, hass: HomeAssistant, config: dict[str, Any], value: str) -> None:
         """Initialize a preview entity."""
 
         self.hass: HomeAssistant = hass
-        self._attr_name = (
-            config.get(CONF_NAME) if config.get(CONF_NAME) is not None else "Preview"
-        )
+        self._attr_name = config.get(CONF_NAME, "Preview")
         self._attr_device_class = config.get(CONF_DEVICE_CLASS)
         self._attr_native_unit_of_measurement = config.get(CONF_UNIT_OF_MEASUREMENT)
         self._attr_state_class = config.get(CONF_STATE_CLASS)
@@ -558,10 +553,6 @@ class PreviewEntity(SensorEntity):
             if not isinstance(value, str)
             else (value if len(value) < 255 else value[:242] + "  <truncated>")
         )
-
-    def async_calculate_state(self) -> CalculatedState:
-        """Calculate the state of the sensor."""
-        return self._async_calculate_state()
 
     @callback
     def async_start_preview(
@@ -579,7 +570,7 @@ class PreviewEntity(SensorEntity):
         """Render a preview."""
         errors: str | None = None
         try:
-            calculated_state: CalculatedState = self.async_calculate_state()
+            calculated_state: CalculatedState = self._async_calculate_state()
             preview_callback(
                 calculated_state.state, calculated_state.attributes, None, None
             )
@@ -595,7 +586,7 @@ class PreviewEntity(SensorEntity):
 
 def _validate_step_matches(
     hass: HomeAssistant, config: dict[str, Any], value: str
-) -> tuple[dict[str, str], PreviewEntity | None]:
+) -> tuple[dict[str, str], PreviewSensorEntity | None]:
     """Validate the matches step."""
     errors: dict[str, str] = {}
     if not config.get(CONF_NAME):
@@ -623,5 +614,5 @@ def _validate_step_matches(
         errors[CONF_STATE_CLASS] = str(ex.msg)
     if errors:
         return errors, None
-    preview: PreviewEntity = PreviewEntity(hass, config=config, value=value)
+    preview: PreviewSensorEntity = PreviewSensorEntity(hass, config=config, value=value)
     return errors, preview
