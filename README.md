@@ -3,6 +3,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg?style=flat-square&logo=homeassistantcommunitystore)](https://hacs.xyz/)
 ![GitHub Release](https://img.shields.io/github/v/release/iluvdata/pdf_scrape)
+![Dynamic JSON Badge](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Filuvdata%2Fpdf_scrape%2Frefs%2Fheads%2Fmain%2Fcustom_components%2Fpdf_scrape%2Fmanifest.json&query=%24.version&prefix=v&label=dev-version&labelColor=orange)
 
 
 A [HACS](https://www.hacs.xyz/) integration that scrapes text pdf files from the web (available via http: and https: only).  Using a combination of regex and [limited templates](https://www.home-assistant.io/docs/configuration/templating/#limited-templates) it creates sensors that are then updated using polling.
