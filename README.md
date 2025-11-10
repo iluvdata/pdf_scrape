@@ -43,11 +43,19 @@ Add the intergration to Home Assistant:
 
 [![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=pdf_scrape)
 
-You should be prompted enter a name (optional), url (required), and the polling interval (mininum 30s).  Long intervals are recommended as pdf files tend to be static and you don't want to be blocked for too frequent of requests or overburden your system.
+You should be prompted enter a name (optional), url (required), and the polling interval (mininum 30s).  Long intervals are recommended as pdf files tend to be static and you don't want to be blocked for too frequent of requests or overburden your system with unecessary downloads or updates.
+
+#### Devices and Entities
+
+Each pdf will create a Device that will be listed under "Devices that don't belong to a sub-entry" with a timestamp sensor "Last Modified" containing the date of the last updated of the PDF document.  The source of this data will be contained in an attribute `source_of_date` along with a MD5 checksum (`MD5_checksum`).  The source of this date (listed in priority):
+1. PDF Metadata (last modified date)
+2. HTTP Server Response Header (`last-modified`)
+3. Initial load time if the above were missing
+4. Changes in the document MD5 checksum (subsequent updates of the document)
 
 #### Configure additional PDFs
 
-Click "Add Hub" in the integration's configuration screen.
+Click "Add Service" in the integration's configuration screen.
 
 ### Configure a sensor
 
@@ -56,3 +64,5 @@ Go to the intergation's dashboard.
 [![Open your Home Assistant instance and show an integration.](https://my.home-assistant.io/badges/integration.svg)](https://my.home-assistant.io/redirect/integration/?domain=pdf_scrape)
 
 Click on the three dots to the right of your intergation's entry name.  On the menu click "+ Add Search Target" to start the configuration flow for the search target.  This should be intuitive.
+
+This will create a subentry under the PDF configuration entry for the individual sensor that you've created.
