@@ -1,6 +1,9 @@
 {
   "config": {
-    "entry_type": "PDF",
+    "initiate_flow": {
+      "reconfigure": "Change PDF URL or update interval",
+      "user": "Add PDF"
+    },
     "step": {
       "user": {
         "data": {
