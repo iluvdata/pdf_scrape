@@ -1,6 +1,6 @@
 """Coordinator to download and parse pdf files."""
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 import logging
 import re
 from typing import Any
@@ -9,21 +9,32 @@ from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError, TemplateError
+import homeassistant.helpers.issue_registry as ir
 from homeassistant.helpers.template import Template, TemplateVarsType
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import (
     CONF_DEFAULT_SCAN_INTERVAL,
-    CONF_MD5_CHECKSUM,
-    CONF_MODIFIED,
-    CONF_MODIFIED_SOURCE,
-    CONF_PDF_PAGE,
+    CONF_MIN_SCAN_INTERVAL,
+    CONF_PDF_PAGES,
     CONF_REGEX_MATCH_INDEX,
     CONF_REGEX_SEARCH,
     CONF_VALUE_TEMPLATE,
     DOMAIN,
+    HTTP_ERROR,
+    INDEX_ERROR,
+    PARSE_ERROR,
+    PATTERN_ERROR,
+    TEMPLATE_ERROR,
 )
-from .pdf import ModifiedDateSource, PDFParseError, PDFScrape
+from .pdf import (
+    HTTPError,
+    PDFParseError,
+    PDFScrape,
+    PDFScrapeHTTP,
+    PDFScrapeLocal,
+    PDFScrapeUpload,
+)
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -34,23 +45,21 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
     """Data coordinator to download and parse the files."""
 
     def __init__(
-        self, hass: HomeAssistant, config_entry: PDFScrapeConfigEntry, pdf: PDFScrape
+        self,
+        hass: HomeAssistant,
+        config_entry: PDFScrapeConfigEntry,
+        pdf: PDFScrape,
+        update_inteval: timedelta | None = None,
     ) -> None:
         """Initialize coordinator."""
-        self.poll_interval: dict[str, int] = config_entry.data.get(
-            CONF_SCAN_INTERVAL, {"seconds": CONF_DEFAULT_SCAN_INTERVAL}
-        )
         self.config_entry: PDFScrapeConfigEntry
         super().__init__(
             hass,
             _LOGGER,
-            name=f"PDF Scrape {pdf.url}",
+            name=f"PDF Scrape Coordinator {pdf}",
             config_entry=config_entry,
-            update_interval=(
-                timedelta(**config_entry.data[CONF_SCAN_INTERVAL])
-                if CONF_SCAN_INTERVAL in config_entry.data
-                else CONF_DEFAULT_SCAN_INTERVAL
-            ),
+            update_interval=update_inteval,
+            always_update=update_inteval is not None,
         )
         self.pdf: PDFScrape = pdf
         self.data = {}
@@ -58,114 +67,182 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
     async def _async_update_data(self) -> dict[str, str]:
         """Perform the update."""
         try:
-            await self.pdf.update()
+            if not self.data or await self.pdf.update():
+                for subentry_conf_key in self.config_entry.subentries:
+                    subentry_conf: ConfigSubentry = self.config_entry.subentries[
+                        subentry_conf_key
+                    ]
 
+                    txt: str = ""
+                    try:
+                        txt = self.pdf.get_pages(subentry_conf.data[CONF_PDF_PAGES])
+                    except IndexError as ex:
+                        async_raise_error(
+                            hass=self.hass,
+                            error_key=INDEX_ERROR,
+                            config_entry=self.config_entry,
+                            exception=ex,
+                            translation_placeholders={
+                                "pages": subentry_conf.data[CONF_PDF_PAGES]
+                            },
+                            config_subentry=subentry_conf,
+                        )
+                    if subentry_conf.data.get(CONF_REGEX_SEARCH):
+                        try:
+                            matches: list[str] = re.findall(
+                                subentry_conf.data[CONF_REGEX_SEARCH], txt
+                            )
+                            if not matches:
+                                async_raise_error(
+                                    hass=self.hass,
+                                    error_key="no_matches",
+                                    config_entry=self.config_entry,
+                                    translation_placeholders={
+                                        "regex": subentry_conf.data[CONF_REGEX_SEARCH]
+                                    },
+                                    config_subentry=subentry_conf,
+                                )
+                            if subentry_conf.data[CONF_REGEX_MATCH_INDEX] != "-1":
+                                txt = matches[
+                                    int(subentry_conf.data[CONF_REGEX_MATCH_INDEX])
+                                ]
+                            else:
+                                txt = matches
+                        except re.PatternError as ex:
+                            async_raise_error(
+                                hass=self.hass,
+                                error_key=PATTERN_ERROR,
+                                config_entry=self.config_entry,
+                                exception=ex,
+                                translation_placeholders={
+                                    "regex": subentry_conf.data[CONF_REGEX_SEARCH]
+                                },
+                                config_subentry=subentry_conf,
+                            )
+                    if subentry_conf.data.get(CONF_VALUE_TEMPLATE):
+                        val_tmp: Template = Template(
+                            subentry_conf.data[CONF_VALUE_TEMPLATE], self.hass
+                        )
+                        variables: TemplateVarsType = {"value": txt}
+                        try:
+                            txt = val_tmp.async_render(
+                                variables=variables, parse_result=False
+                            )
+                        except TemplateError as ex:
+                            async_raise_error(
+                                self.hass,
+                                error_key=TEMPLATE_ERROR,
+                                config_entry=self.config_entry,
+                                exception=ex,
+                                config_subentry=subentry_conf,
+                            )
+                    self.data[subentry_conf_key] = txt
+        except HTTPError as ex:
+            async_raise_error(
+                hass=self.hass,
+                error_key=HTTP_ERROR,
+                config_entry=self.config_entry,
+                exception=ex,
+            )
         except PDFParseError as ex:
-            _LOGGER.exception("Unable to parse_pdf: %s", self.pdf.url)
-            raise ConfigEntryError(
-                translation_domain=DOMAIN,
-                translation_key="unable_to_parse",
-                translation_placeholders={"exc": str(ex)},
-            ) from ex
-        config_updates: dict[str, Any] = {}
-        if self.pdf.modified is None:
-            if CONF_MD5_CHECKSUM not in self.config_entry.data:
-                # first run
-                config_updates[CONF_MODIFIED_SOURCE] = ModifiedDateSource.FIRST_CHECK
-                config_updates[CONF_MODIFIED] = datetime.now()
-            elif self.pdf.md5_checksum != self.config_entry.data[CONF_MD5_CHECKSUM]:
-                # we have an updated pdf.
-                config_updates[CONF_MODIFIED] = datetime.now()
-                config_updates[CONF_MODIFIED_SOURCE] = ModifiedDateSource.CHECKSUM
-        elif (
-            CONF_MD5_CHECKSUM not in self.config_entry.data
-            or self.pdf.md5_checksum != self.config_entry.data[CONF_MD5_CHECKSUM]
-        ):
-            # we have a date but the file has changed.
-            config_updates[CONF_MODIFIED] = self.pdf.modified
-            config_updates[CONF_MODIFIED_SOURCE] = self.pdf.modified_source
-        if config_updates:
-            config_updates[CONF_MD5_CHECKSUM] = self.pdf.md5_checksum
-            prior_config = dict(self.config_entry.data)
-            prior_config.update(config_updates)
-            self.hass.config_entries.async_update_entry(
-                self.config_entry, data=prior_config
+            async_raise_error(
+                hass=self.hass,
+                error_key=PARSE_ERROR,
+                config_entry=self.config_entry,
+                exception=ex,
             )
 
-        for subentry_conf_key in self.config_entry.subentries:
-            subentry_conf: ConfigSubentry = self.config_entry.subentries[
-                subentry_conf_key
-            ]
-
-            txt: str = ""
-            try:
-                txt = self.pdf.pages[int(subentry_conf.data[CONF_PDF_PAGE])]
-            except IndexError as ex:
-                _LOGGER.exception(
-                    "Page %i not found in %s",
-                    int(subentry_conf.data[CONF_PDF_PAGE]),
-                    subentry_conf.title,
-                )
-                raise ConfigEntryError(
-                    translation_domain=DOMAIN,
-                    translation_key="index_error",
-                    translation_placeholders={
-                        "page": subentry_conf.data[CONF_PDF_PAGE],
-                        "conf": subentry_conf.title,
-                    },
-                ) from ex
-            if subentry_conf.data.get(CONF_REGEX_SEARCH):
-                try:
-                    matches: list[str] = re.findall(
-                        subentry_conf.data[CONF_REGEX_SEARCH], txt
-                    )
-                    if not matches:
-                        raise ConfigEntryError(
-                            translation_domain=DOMAIN,
-                            translation_key="no_matches",
-                            translation_placeholders={
-                                "regex": subentry_conf.data[CONF_REGEX_SEARCH],
-                                "conf": subentry_conf.title,
-                            },
-                        )
-                    txt = matches[int(subentry_conf.data[CONF_REGEX_MATCH_INDEX])]
-                except re.PatternError as ex:
-                    _LOGGER.exception(
-                        "Pattern Error: %s using regex: %s on %s",
-                        ex.msg,
-                        subentry_conf.data[CONF_REGEX_SEARCH],
-                        subentry_conf.title,
-                    )
-                    raise ConfigEntryError(
-                        translation_domain=DOMAIN,
-                        translation_key="pattern_error",
-                        translation_placeholders={
-                            "exc_msg": ex.msg,
-                            "regex": subentry_conf.data[CONF_REGEX_SEARCH],
-                            "conf": subentry_conf.title,
-                        },
-                    ) from ex
-            if subentry_conf.data.get(CONF_VALUE_TEMPLATE):
-                val_tmp: Template = Template(
-                    subentry_conf.data[CONF_VALUE_TEMPLATE], self.hass
-                )
-                variables: TemplateVarsType = {"value": txt}
-                try:
-                    txt = val_tmp.async_render(
-                        variables=variables, parse_result=False, limited=True
-                    )
-                except TemplateError as ex:
-                    _LOGGER.exception(
-                        "Template Error on %s",
-                        subentry_conf.title,
-                    )
-                    raise ConfigEntryError(
-                        translation_domain=DOMAIN,
-                        translation_key="template_error",
-                        translation_placeholders={
-                            "exc_msg": str(ex),
-                            "conf": subentry_conf.title,
-                        },
-                    ) from ex
-            self.data[subentry_conf_key] = txt
         return self.data
+
+
+class PDFScrapeHTTPCoordinator(PDFScrapeCoordinator):
+    """Data coordinator to download and parse the files."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        config_entry: PDFScrapeConfigEntry,
+        pdf: PDFScrapeHTTP,
+    ) -> None:
+        """Initialize coordinator."""
+        super().__init__(
+            hass,
+            config_entry,
+            pdf,
+            timedelta(**config_entry.data[CONF_SCAN_INTERVAL])
+            if CONF_SCAN_INTERVAL in config_entry.data
+            else CONF_DEFAULT_SCAN_INTERVAL,
+        )
+
+
+class PDFScrapeUploadCoordinator(PDFScrapeCoordinator):
+    """Data coordinator to download and parse the files."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        config_entry: PDFScrapeConfigEntry,
+        pdf: PDFScrapeUpload,
+    ) -> None:
+        """Initialize coordinator."""
+        super().__init__(hass, config_entry, pdf)
+
+    async def async_upload_pdf(self, pdf: PDFScrapeUpload) -> None:
+        """Upload a new pdf."""
+        self.pdf = pdf
+        await self._async_update_data()
+
+
+class PDFScrapeLocalCoordinator(PDFScrapeCoordinator):
+    """Data coordinator to download and parse the files."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        config_entry: PDFScrapeConfigEntry,
+        pdf: PDFScrapeLocal,
+    ) -> None:
+        """Initialize coordinator."""
+        super().__init__(hass, config_entry, pdf, CONF_MIN_SCAN_INTERVAL)
+
+
+def async_raise_error(
+    hass: HomeAssistant,
+    error_key: str,
+    config_entry: PDFScrapeConfigEntry,
+    exception: Exception | None = None,
+    translation_placeholders: dict[str, Any] | None = None,
+    config_subentry: ConfigSubentry | None = None,
+) -> None:
+    """Log issues, create repairs, and raise exceptions."""
+
+    if translation_placeholders is None:
+        translation_placeholders = {}
+    translation_placeholders["conf"] = (
+        config_entry.title if config_subentry is None else config_subentry.title
+    )
+    translation_placeholders["exc"] = str(exception)
+    data: dict[str, Any] = {"config_entry_id": config_entry.entry_id}
+    if config_subentry is not None:
+        data["config_subentry_id"] = config_subentry.subentry_id
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        f"{error_key}_{config_entry.entry_id}{f'_{config_subentry.subentry_id}' if config_subentry is not None else ''}",
+        data=data,
+        is_fixable=True,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key=error_key,
+        translation_placeholders=translation_placeholders,
+    )
+    if exception is not None:
+        raise ConfigEntryError(
+            translation_domain=DOMAIN,
+            translation_key=error_key,
+            translation_placeholders=translation_placeholders,
+        ) from exception
+    raise ConfigEntryError(
+        translation_domain=DOMAIN,
+        translation_key=error_key,
+        translation_placeholders=translation_placeholders,
+    )

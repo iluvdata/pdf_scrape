@@ -4,13 +4,14 @@ from datetime import datetime
 
 from homeassistant.components.sensor import (
     CONF_STATE_CLASS,
+    SensorDeviceClass,
     SensorEntity,
     cached_property,
 )
-from homeassistant.components.sensor.const import SensorDeviceClass
 from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import (
     CONF_DEVICE_CLASS,
+    CONF_TYPE,
     CONF_UNIT_OF_MEASUREMENT,
     CONF_URL,
     EntityCategory,
@@ -23,7 +24,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import PDFScrapeConfigEntry
-from .const import CONF_MD5_CHECKSUM, CONF_MODIFIED, CONF_MODIFIED_SOURCE, DOMAIN
+from .const import CONF_FILE, CONF_MD5_CHECKSUM, CONF_MODIFIED_SOURCE, DOMAIN, ConfType
 from .coordinator import PDFScrapeCoordinator
 
 
@@ -42,14 +43,20 @@ async def async_setup_entry(
 
 
 def _async_get_device_info(config_entry: PDFScrapeConfigEntry) -> DeviceInfo:
-    return DeviceInfo(
+    device_info: DeviceInfo = DeviceInfo(
         identifiers={(DOMAIN, config_entry.entry_id)},
         name=config_entry.title,
-        manufacturer="PDFScrape",
-        model="PDF Scrape Document",
         entry_type=DeviceEntryType.SERVICE,
-        configuration_url=config_entry.data[CONF_URL],
     )
+    match config_entry.data[CONF_TYPE]:
+        case ConfType.LOCAL:
+            device_info["model"] = config_entry.data[CONF_FILE]
+        case ConfType.HTTP:
+            device_info["configuration_url"] = config_entry.data[CONF_URL]
+            device_info["model"] = config_entry.data[CONF_URL]
+        case ConfType.UPLOAD:
+            device_info["model"] = config_entry.title
+    return device_info
 
 
 class PDFDocumentSensor(CoordinatorEntity[PDFScrapeCoordinator], SensorEntity):  # type: ignore[reportIncompatibleVariableOverride]
@@ -73,20 +80,16 @@ class PDFDocumentSensor(CoordinatorEntity[PDFScrapeCoordinator], SensorEntity): 
         self.async_write_ha_state()
 
     @cached_property
-    def native_value(self) -> datetime:
+    def native_value(self) -> datetime | None:
         """Return the state of the sensor."""
-        if isinstance(self.coordinator.config_entry.data[CONF_MODIFIED], datetime):
-            return self.coordinator.config_entry.data[CONF_MODIFIED]
-        return datetime.fromisoformat(self.coordinator.config_entry.data[CONF_MODIFIED])
+        return self.coordinator.pdf.modified
 
     @cached_property
     def extra_state_attributes(self) -> dict[str, str]:
         """Return Extra Attributes."""
         return {
-            CONF_MODIFIED_SOURCE: self.coordinator.config_entry.data[
-                CONF_MODIFIED_SOURCE
-            ],
-            CONF_MD5_CHECKSUM: self.coordinator.config_entry.data[CONF_MD5_CHECKSUM],
+            CONF_MODIFIED_SOURCE: self.coordinator.pdf.modified_source,
+            CONF_MD5_CHECKSUM: self.coordinator.pdf.md5_checksum,
         }
 
 
