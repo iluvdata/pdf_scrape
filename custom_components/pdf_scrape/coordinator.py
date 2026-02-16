@@ -222,9 +222,9 @@ def async_raise_error(
         config_entry.title if config_subentry is None else config_subentry.title
     )
     translation_placeholders["exc"] = str(exception)
-    data: dict[str, Any] = {"config_entry_id": config_entry.entry_id}
+    data: dict[str, Any] = {"entry_id": config_entry.entry_id}
     if config_subentry is not None:
-        data["config_subentry_id"] = config_subentry.subentry_id
+        data["subentry_id"] = config_subentry.subentry_id
     ir.async_create_issue(
         hass,
         DOMAIN,
