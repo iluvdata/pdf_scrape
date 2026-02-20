@@ -21,10 +21,9 @@ from .const import (
     CONF_REGEX_SEARCH,
     CONF_VALUE_TEMPLATE,
     DOMAIN,
-    HTTP_ERROR,
     INDEX_ERROR,
-    PARSE_ERROR,
     PATTERN_ERROR,
+    PDF_ERROR,
     TEMPLATE_ERROR,
 )
 from .pdf import (
@@ -137,17 +136,10 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
                                 config_subentry=subentry_conf,
                             )
                     self.data[subentry_conf_key] = txt
-        except HTTPError as ex:
+        except (HTTPError, PDFParseError) as ex:
             async_raise_error(
                 hass=self.hass,
-                error_key=HTTP_ERROR,
-                config_entry=self.config_entry,
-                exception=ex,
-            )
-        except PDFParseError as ex:
-            async_raise_error(
-                hass=self.hass,
-                error_key=PARSE_ERROR,
+                error_key=PDF_ERROR,
                 config_entry=self.config_entry,
                 exception=ex,
             )
@@ -221,8 +213,18 @@ def async_raise_error(
     translation_placeholders["conf"] = (
         config_entry.title if config_subentry is None else config_subentry.title
     )
-    translation_placeholders["exc"] = str(exception)
-    data: dict[str, Any] = {"entry_id": config_entry.entry_id}
+    data: dict[str, Any] = {
+        "entry_id": config_entry.entry_id,
+        "error_key": error_key,
+    }
+    if exception is not None:
+        msg: str = (
+            "Unable to parse PDF"
+            if isinstance(exception, PDFParseError)
+            else str(exception)
+        )
+        data["exc"] = msg
+        translation_placeholders["exc"] = msg
     if config_subentry is not None:
         data["subentry_id"] = config_subentry.subentry_id
     ir.async_create_issue(

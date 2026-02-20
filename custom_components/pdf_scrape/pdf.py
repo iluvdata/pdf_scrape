@@ -18,6 +18,7 @@ from aiohttp import (
 from pypdf import DocumentInformation, PdfReader
 from pypdf.errors import PyPdfError
 
+from homeassistant.components.hassio import async_get_clientsession
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
@@ -180,15 +181,11 @@ class PDFScrapeHTTP(PDFScrape):
         url: str,
         *,
         config_entry_id: str | None = None,
-        session: ClientSession | None = None,
     ):
         """Instantiate a pdfscrape class."""
         self = cls(hass, config_entry_id)
         self.url = url
-        if session is None:
-            self.session = ClientSession(raise_for_status=True)
-        else:
-            self.session = session
+        self.session = async_get_clientsession(self.hass)
         await self._pdf_scrape()
         return self
 

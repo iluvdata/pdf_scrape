@@ -6,7 +6,6 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant.components.file_upload import process_uploaded_file
-from homeassistant.components.hassio import async_get_clientsession
 
 # import aiohttp
 from homeassistant.config_entries import ConfigEntry
@@ -36,8 +35,7 @@ from .const import (
     CONF_MODIFIED,
     CONF_MODIFIED_SOURCE,
     DOMAIN,
-    HTTP_ERROR,
-    PARSE_ERROR,
+    PDF_ERROR,
     ConfType,
 )
 from .coordinator import (
@@ -160,7 +158,6 @@ async def async_setup_entry(
                     hass,
                     config_entry.data[CONF_URL],
                     config_entry_id=config_entry.entry_id,
-                    session=async_get_clientsession(hass),
                 )
                 coordinator = PDFScrapeHTTPCoordinator(hass, config_entry, pdfhttp)
             case ConfType.UPLOAD:
@@ -203,15 +200,10 @@ async def async_setup_entry(
 
         await hass.config_entries.async_forward_entry_setups(config_entry, _PLATFORMS)
 
-    except PDFParseError as ex:
-        async_raise_error(
-            hass=hass, error_key=PARSE_ERROR, config_entry=config_entry, exception=ex
-        )
-
-    except HTTPError as ex:
+    except (HTTPError, TimeoutError, PDFParseError) as ex:
         async_raise_error(
             hass=hass,
-            error_key=HTTP_ERROR,
+            error_key=PDF_ERROR,
             config_entry=config_entry,
             exception=ex,
         )

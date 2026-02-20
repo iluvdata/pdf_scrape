@@ -138,11 +138,8 @@
     }
   },
   "exceptions": {
-    "http_error": {
-      "message": "Cannot access pdf for \"{conf}\": {exc}"
-    },
-    "parse_error": {
-      "message": "Unable to parse pdf: {conf} {exc}"
+    "pdf_error": {
+      "message": "Error opening PDF for \"{conf}\": {exc}"
     },
     "index_error": {
       "message": "Page(s) {pages} doesn't appear to exist in {conf}"
@@ -245,6 +242,19 @@
         "file": {
           "name": "PDF File to Upload",
           "description": "PDF File containing data to scrape."
+        }
+      }
+    }
+  },
+  "issues":{
+    "pdf_error": {
+      "title": "Unable to Process PDF ({conf})",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Error Opening PDF",
+            "description": "{exc}. Reconfigure PDF?"
+          }
         }
       }
     }

@@ -47,6 +47,7 @@ from homeassistant.helpers.config_validation import (
     url,
 )
 from homeassistant.helpers.entity import CalculatedState
+import homeassistant.helpers.issue_registry as ir
 from homeassistant.helpers.selector import (
     DurationSelector,
     DurationSelectorConfig,
@@ -73,6 +74,7 @@ from .const import (
     CONF_REGEX_SEARCH,
     CONF_VALUE_TEMPLATE,
     DOMAIN,
+    PDF_ERROR,
     REGEX_PAGE_RANGE_PATTERN,
     URL_FILE_INTEGRATION,
     ConfType,
@@ -109,6 +111,11 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle config flow."""
         return self.async_show_menu(
             step_id="user", menu_options=list(ConfType), sort=True
+        )
+
+    def _async_clear_issue(self) -> None:
+        ir.async_delete_issue(
+            self.hass, DOMAIN, f"{PDF_ERROR}_{self._get_reconfigure_entry().entry_id}"
         )
 
     async def async_step_http(
@@ -153,7 +160,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
                         await self.async_set_unique_id(
                             f"{DOMAIN}_{user_input[CONF_URL]}"
                         )
-                        # self._abort_if_unique_id_mismatch()
+                        self._async_clear_issue()
                         return self.async_update_reload_and_abort(
                             self._get_reconfigure_entry(),
                             title=title,
@@ -303,6 +310,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
                 if self.source == SOURCE_RECONFIGURE:
                     await self.async_set_unique_id(f"{DOMAIN}_{user_input[CONF_FILE]}")
                     # self._abort_if_unique_id_mismatch()
+                    self._async_clear_issue()
                     return self.async_update_reload_and_abort(
                         self._get_reconfigure_entry(),
                         title=title,
@@ -327,6 +335,8 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
             flow_schema = self.add_suggested_values_to_schema(
                 flow_schema, self._get_reconfigure_entry().data
             )
+        elif user_input is not None:
+            flow_schema = self.add_suggested_values_to_schema(flow_schema, user_input)
         return self.async_show_form(
             step_id="local",
             data_schema=flow_schema,
@@ -665,7 +675,7 @@ def ws_start_preview(
                     )
                     if len(matches) > 1:
                         user_input[CONF_NAME] = f"{len(matches)} Matches"
-                        value = " ^ ".join(matches)
+                        value = ", ".join(matches)
                     elif len(matches) == 1:
                         value = matches[0]
                         user_input[CONF_NAME] = "1 Match"
