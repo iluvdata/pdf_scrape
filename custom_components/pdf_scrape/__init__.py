@@ -35,8 +35,8 @@ from .const import (
     CONF_MODIFIED,
     CONF_MODIFIED_SOURCE,
     DOMAIN,
-    PDF_ERROR,
     ConfType,
+    ErrorTypes,
 )
 from .coordinator import (
     PDFScrapeConfigEntry,
@@ -203,7 +203,7 @@ async def async_setup_entry(
     except (HTTPError, TimeoutError, PDFParseError) as ex:
         async_raise_error(
             hass=hass,
-            error_key=PDF_ERROR,
+            error_key=ErrorTypes.PDF_ERROR,
             config_entry=config_entry,
             exception=ex,
         )

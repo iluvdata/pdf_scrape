@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError, TemplateError
 import homeassistant.helpers.issue_registry as ir
 from homeassistant.helpers.template import Template, TemplateVarsType
+from homeassistant.helpers.translation import async_get_exception_message
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import (
@@ -21,10 +22,7 @@ from .const import (
     CONF_REGEX_SEARCH,
     CONF_VALUE_TEMPLATE,
     DOMAIN,
-    INDEX_ERROR,
-    PATTERN_ERROR,
-    PDF_ERROR,
-    TEMPLATE_ERROR,
+    ErrorTypes,
 )
 from .pdf import (
     HTTPError,
@@ -78,7 +76,7 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
                     except IndexError as ex:
                         async_raise_error(
                             hass=self.hass,
-                            error_key=INDEX_ERROR,
+                            error_key=ErrorTypes.INDEX_ERROR,
                             config_entry=self.config_entry,
                             exception=ex,
                             translation_placeholders={
@@ -110,7 +108,7 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
                         except re.PatternError as ex:
                             async_raise_error(
                                 hass=self.hass,
-                                error_key=PATTERN_ERROR,
+                                error_key=ErrorTypes.PATTERN_ERROR,
                                 config_entry=self.config_entry,
                                 exception=ex,
                                 translation_placeholders={
@@ -130,7 +128,7 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
                         except TemplateError as ex:
                             async_raise_error(
                                 self.hass,
-                                error_key=TEMPLATE_ERROR,
+                                error_key=ErrorTypes.TEMPLATE_ERROR,
                                 config_entry=self.config_entry,
                                 exception=ex,
                                 config_subentry=subentry_conf,
@@ -139,7 +137,7 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
         except (HTTPError, PDFParseError) as ex:
             async_raise_error(
                 hass=self.hass,
-                error_key=PDF_ERROR,
+                error_key=ErrorTypes.PDF_ERROR,
                 config_entry=self.config_entry,
                 exception=ex,
             )
@@ -202,7 +200,7 @@ def async_raise_error(
     hass: HomeAssistant,
     error_key: str,
     config_entry: PDFScrapeConfigEntry,
-    exception: Exception | None = None,
+    exception: Exception,
     translation_placeholders: dict[str, Any] | None = None,
     config_subentry: ConfigSubentry | None = None,
 ) -> None:
@@ -213,18 +211,17 @@ def async_raise_error(
     translation_placeholders["conf"] = (
         config_entry.title if config_subentry is None else config_subentry.title
     )
+    msg = (
+        str(exception)
+        if not isinstance(exception, PDFParseError)
+        else "Unable to parse pdfS"
+    )
+    translation_placeholders["msg"] = msg
     data: dict[str, Any] = {
         "entry_id": config_entry.entry_id,
         "error_key": error_key,
+        "msg": async_get_exception_message(DOMAIN, error_key, translation_placeholders),
     }
-    if exception is not None:
-        msg: str = (
-            "Unable to parse PDF"
-            if isinstance(exception, PDFParseError)
-            else str(exception)
-        )
-        data["exc"] = msg
-        translation_placeholders["exc"] = msg
     if config_subentry is not None:
         data["subentry_id"] = config_subentry.subentry_id
     ir.async_create_issue(

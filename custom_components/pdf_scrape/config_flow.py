@@ -24,6 +24,7 @@ from homeassistant.config_entries import (
     SOURCE_RECONFIGURE,
     SOURCE_USER,
     ConfigEntry,
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
     ConfigSubentryFlow,
@@ -74,10 +75,10 @@ from .const import (
     CONF_REGEX_SEARCH,
     CONF_VALUE_TEMPLATE,
     DOMAIN,
-    PDF_ERROR,
     REGEX_PAGE_RANGE_PATTERN,
     URL_FILE_INTEGRATION,
     ConfType,
+    ErrorTypes,
 )
 from .pdf import (
     FileError,
@@ -85,6 +86,7 @@ from .pdf import (
     PDFParseError,
     PDFScrape,
     PDFScrapeHTTP,
+    PDFScrapeLocal,
     PDFScrapeUpload,
 )
 
@@ -115,7 +117,9 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
 
     def _async_clear_issue(self) -> None:
         ir.async_delete_issue(
-            self.hass, DOMAIN, f"{PDF_ERROR}_{self._get_reconfigure_entry().entry_id}"
+            self.hass,
+            DOMAIN,
+            f"{ErrorTypes.PDF_ERROR}_{self._get_reconfigure_entry().entry_id}",
         )
 
     async def async_step_http(
@@ -290,7 +294,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
         error_placeholders: dict[str, str] = {}
         if user_input:
             try:
-                await PDFScrapeUpload.pdfscrape(
+                await PDFScrapeLocal.pdfscrape(
                     self.hass, path=Path(isfile(pathcheck(user_input[CONF_FILE])))
                 )
                 data: dict[str, Any] = {
@@ -364,6 +368,8 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
 
     data: dict[str, Any] = {}
 
+    pdf: PDFScrape
+
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
@@ -378,12 +384,33 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
 
         config_entry: PDFScrapeConfigEntry = self._get_entry()
 
+        if config_entry.state == ConfigEntryState.LOADED:
+            self.pdf = config_entry.runtime_data.pdf
+        else:  # Repair pathway?
+            match config_entry.data[CONF_TYPE]:
+                case ConfType.HTTP:
+                    self.pdf = await PDFScrapeHTTP.pdfscrape(
+                        self.hass,
+                        config_entry.data[CONF_URL],
+                        config_entry_id=config_entry.entry_id,
+                    )
+                case ConfType.LOCAL:
+                    self.pdf = await PDFScrapeLocal.pdfscrape(
+                        self.hass,
+                        config_entry.data[CONF_FILE],
+                        config_entry_id=config_entry.entry_id,
+                    )
+                case ConfType.UPLOAD:
+                    self.pdf = await PDFScrapeUpload.pdfscrape(
+                        self.hass, config_entry_id=config_entry.entry_id
+                    )
+
         if user_input:
             if not re.match(REGEX_PAGE_RANGE_PATTERN, user_input[CONF_PDF_PAGES]):
                 errors[CONF_PDF_PAGES] = "invalid_page_range"
             try:
-                config_entry.runtime_data.pdf.get_pages(user_input[CONF_PDF_PAGES])
-            except ValueError:
+                self.pdf.get_pages(user_input[CONF_PDF_PAGES])
+            except IndexError:
                 errors[CONF_PDF_PAGES] = "pages_out_of_range"
             if not errors:
                 self.data[CONF_PDF_PAGES] = user_input[CONF_PDF_PAGES]
@@ -404,7 +431,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
             ),
             description_placeholders={
                 "title": self._get_entry().title,
-                "pages": len(config_entry.runtime_data.pdf.pages),
+                "pages": len(self.pdf.pages),
             },
             errors=errors,
             last_step=False,
@@ -422,8 +449,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
     ) -> SubentryFlowResult:
         """Get the regex."""
         errors: dict[str, str] = {}
-        pdf: PDFScrape = self._get_entry().runtime_data.pdf
-        text: str = pdf.get_pages(self.data[CONF_PDF_PAGES])
+        text: str = self.pdf.get_pages(self.data[CONF_PDF_PAGES])
 
         if user_input and user_input.get(CONF_REGEX_SEARCH):
             # Validate that it's a valid regex
@@ -475,8 +501,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
         """Get the regex."""
         errors: dict[str, str] = {}
 
-        pdf: PDFScrape = self._get_entry().runtime_data.pdf
-        text: str = pdf.get_pages(self.data[CONF_PDF_PAGES])
+        text: str = self.pdf.get_pages(self.data[CONF_PDF_PAGES])
 
         pattern: str | None = self.data.get(CONF_REGEX_SEARCH)
         matches: list[str] = re.findall(pattern, text) if pattern else []
@@ -508,13 +533,21 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                         data=self.data | user_input,
                         unique_id=config_id,
                     )
-                return self.async_update_and_abort(
+                # Was there an issue?
+                iss_reg: ir.IssueRegistry = ir.async_get(self.hass)
+                for error_type in ErrorTypes:
+                    if issue := iss_reg.async_get_issue(
+                        DOMAIN,
+                        f"{error_type}_{self._get_entry().entry_id}_{self._get_reconfigure_subentry().subentry_id}",
+                    ):
+                        ir.async_delete_issue(self.hass, DOMAIN, issue.issue_id)
+
+                return self.async_update_reload_and_abort(
                     self._get_entry(),
                     self._get_reconfigure_subentry(),
                     title=user_input[CONF_NAME],
                     data=self.data | user_input,
                 )
-
         opts: list[SelectOptionDict] = []
 
         if len(matches) > 0:
@@ -616,7 +649,7 @@ def ws_start_preview(
     )
     if not config_entry:
         raise HomeAssistantError
-    pdf: PDFScrape = config_entry.runtime_data.pdf
+    # pdf: PDFScrape = config_entry.runtime_data.pdf
 
     errors: dict[str, str] = {}
 
@@ -648,6 +681,7 @@ def ws_start_preview(
         TargetSubentryFlowHandler,
         hass.config_entries.subentries._progress.get(msg["flow_id"]),  # noqa: SLF001
     )
+    pdf: PDFScrape = flow.pdf
     preview: PreviewSensorEntity | None = None
     if step in ["user", "reconfigure"]:
         user_input[CONF_NAME] = "Text"
@@ -658,7 +692,7 @@ def ws_start_preview(
         else:
             try:
                 value = pdf.get_pages(pages)
-            except ValueError:
+            except IndexError:
                 errors[CONF_PDF_PAGES] = "invalid_page_range"
     else:
         pages = flow.data[CONF_PDF_PAGES]

@@ -161,7 +161,7 @@ class PDFScrape(ABC):
             else:
                 page_nums.add(int(part))
         if max(page_nums) > len(self.pages) or min(page_nums) < 1:
-            raise ValueError("Page number out of range")
+            raise IndexError("Page number out of range")
         return "\n".join(self.pages[page - 1] for page in sorted(page_nums))
 
 

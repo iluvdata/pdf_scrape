@@ -139,7 +139,7 @@
   },
   "exceptions": {
     "pdf_error": {
-      "message": "Error opening PDF for \"{conf}\": {exc}"
+      "message": "Error opening PDF for \"{conf}\": {msg}"
     },
     "index_error": {
       "message": "Page(s) {pages} doesn't appear to exist in {conf}"
@@ -148,10 +148,10 @@
       "message": "No matches found using {regex} on {conf}"
     },
     "pattern_error": {
-      "message": "Regex pattern error: {exc} using {regex} on {conf}"
+      "message": "Regex pattern error: {msg} using {regex} on {conf}"
     },
     "template_error": {
-      "message": "Template error: {exc} on {conf}"
+      "message": "Template error: {msg} on {conf}"
     }
   },
   "selector": {
@@ -248,13 +248,69 @@
   },
   "issues":{
     "pdf_error": {
-      "title": "Unable to Process PDF ({conf})",
+      "title": "Error Opening PDF ({conf})",
       "fix_flow": {
         "step": {
           "confirm": {
-            "title": "Error Opening PDF",
-            "description": "{exc}. Reconfigure PDF?"
+            "title": "Error Opening PDF ({conf})",
+            "description": "{msg}  \n  \nReconfigure PDF?"
           }
+        }
+      }
+    },
+    "index_error": {
+      "title": "Page(s) Out of Range ({conf})",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Page(s) Out of Range ({conf})",
+            "description": "{msg}  \n  \nContinue?"
+          }
+        },
+        "abort": {
+          "manual_fix": "This issue requires a manual fix. Please open the subentry configuration, and change the settings to fix this issue."
+        }
+      }
+    },
+    "pattern_error": {
+      "title": "Regular Expression Error ({conf})",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Regular Expression Error ({conf})",
+            "description": "{msg}  \n  \nContinue?"
+          }
+        },
+        "abort": {
+          "manual_fix": "This issue requires a manual fix. Please open the subentry configuration, and change the settings to fix this issue."
+        }
+      }
+    },
+    "no_matches": {
+      "title": "No Matches Found ({conf})",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "No Matches Found ({conf})",
+            "description": "{msg}  \n  \nContinue?"
+          }
+        },
+        "abort": {
+          "manual_fix": "This issue requires a manual fix. Please open the subentry configuration, and change the settings to fix this issue."
+        }
+      }
+    },
+    "template_error": {
+      "title": "Template Error ({conf})",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Template Error ({conf})",
+            "description": "{msg}  \n  \nContinue?"
+          }
+        },
+        "abort": {
+          "manual_fix": "This issue requires a manual fix. Please open the subentry configuration, and change the settings to fix this issue."
         }
       }
     }

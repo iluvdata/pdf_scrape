@@ -17,10 +17,16 @@ CONF_MODIFIED: Final[str] = "modified"
 CONF_MODIFIED_SOURCE: Final[str] = "modified_source"
 CONF_FILE: Final[str] = "file"
 
-PDF_ERROR: Final[str] = "pdf_error"
-PATTERN_ERROR: Final[str] = "pattern_error"
-TEMPLATE_ERROR: Final[str] = "template_error"
-INDEX_ERROR: Final[str] = "index_error"
+
+class ErrorTypes(StrEnum):
+    """Error types for integration."""
+
+    PDF_ERROR = "pdf_error"
+    PATTERN_ERROR = "pattern_error"
+    TEMPLATE_ERROR = "template_error"
+    INDEX_ERROR = "index_error"
+    NO_MATCHES = "no_matches"
+
 
 REGEX_PAGE_RANGE_PATTERN: Final[Pattern] = r"^[\d]+(-[\d]+)?(,[\d]+(-[\d]+)?)*$"
 
