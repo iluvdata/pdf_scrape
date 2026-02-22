@@ -2,32 +2,58 @@
   "config": {
     "step": {
       "user": {
+        "menu_options":
+        {
+          "http": "HTTP/HTTPS source",
+          "upload": "Upload a PDF file",
+          "local": "Local PDF file"
+        },
+        "description": "Choose a PDF source:"
+      },
+      "http": {
+        "title": "Configure PDF from URL",
         "data": {
-          "name": "Name",
+          "name": "Name of PDF source",
           "url": "URL of PDF",
           "scan_interval": "Update Interval"
         },
         "data_description": {
           "name": "If name not provided, the URL will be used as name",
-          "url": "URL (http: or https: only)",
-          "scan_interval": "Minimum is {min_int}s"
+          "url": "URL (http:// or https:// only)",
+          "scan_interval": "Minimum is {min_int}"
         }
       },
-      "reconfigure": {
-        "description": "URL must use http or https. Minimun update interval is {min_int}s",
+      "local": {
+        "title": "Configure PDF from local file",
+        "description": "File paths must be accessible to Home Assistant. See the base [File]({url_file_integration}) integration documentation particularly the notes on using `allowlist_external_dirs` in the `configuration.yaml` file.",
         "data": {
-          "name": "Optional name",
-          "url": "URL of PDF",
-          "scan_interval": "Update Interval"
+          "name": "Name of PDF source",
+          "file": "Path to local PDF file"
+        },
+        "data_description": {
+          "name": "If name not provided, the file path will be used as name",
+          "file": "File path (must be accessible to Home Assistant)"
+        }
+      },
+      "upload": {
+        "title": "Upload a PDF",
+        "data": {
+          "name": "Name of PDF source",
+          "file": "PDF File to scrape for data"
+        },
+        "data_description": {
+          "name": "If name not provided, will attempt to assign name from PDF metadata",
+          "file": "No password protection or encryption supported"
         }
       }
     },
     "error": {
       "invalid_url": "Bad URL",
       "pdf_parse": "Cannot parse PDF",
-      "http_error": "Cannot access pdf @ provided URL",
+      "http_error": "Cannot access PDF @ provided URL",
       "invalid_source": "Accessed configuration from an invalid flow",
-      "unknown": "Unknown error"
+      "unknown": "Unknown error",
+      "file_error": "File access error: {file}"
     },
     "abort": {
       "already_configured": "PDF is already configured",
@@ -45,28 +71,18 @@
           "title": "Target Page",
           "description": "{title}",
           "data": {
-            "pdf_page": "Page"
+            "pdf_pages": "Pages"
           },
           "data_description": {
-            "pdf_page": "Page number in pdf to parse"
-          }
-        },
-        "reconfigure": {
-          "title": "Target Page",
-          "description": "{title}",
-          "data": {
-            "pdf_page": "Page"
-          },
-          "data_description": {
-            "pdf_page": "Page number in pdf to parse"
+            "pdf_pages": "Pages in PDF: {pages}. Use comma to separate multiple pages or hyphen for page ranges (e.g., 1,3-5,7)."
           }
         },
         "regex": {
           "title": "Regular Expression",
-          "description": "Page {pdf_page}: {title}",
+          "description": "Pages {pdf_pages}: {title}",
           "data": {
             "regex_search": "Python Regex",
-            "page_text": "Page Text (Reference Only)"
+            "page_text": "Text (Reference Only)"
           },
           "data_description": {
             "regex_search": "Leave blank to use all text on selected page"
@@ -77,14 +93,14 @@
           "data": {
             "name": "Name",
             "regex_match_index": "Select match",
-            "value_template": "Limited Template",
+            "value_template": "Template",
             "unit_of_measurement": "Unit of Measurement",
             "device_class": "Device Class",
             "state_class": "State Class",
             "device_id": "Device"
           },
           "data_description": {
-            "value_template": "Limited template support only with a single variable of `value`."
+            "value_template": "If \"All Matches\" is selected, a template is required. `value` will be a `list` of matches. Use `value[idx]` to reference a specific match. Otherwise `value` is a `str` containing the selected match."
           }
         }
       },
@@ -92,8 +108,10 @@
         "reconfigure_successful": "Search target configuration successful."
       },
       "error": {
+        "invalid_page_range": "Invalid page range. Use comma to separate multiple pages or hyphen for page ranges (e.g., 1,3-5,7).",
         "bad_pattern": "Invalid regular expression pattern (see logs)",
-        "no_matches": "No matches found. Either fix or remove the regex to proceed."
+        "no_matches": "No matches found. Either fix or remove the regex to proceed.",
+        "pages_out_of_range": "One or more pages are out of range for the document."
       }
     }
   },
@@ -105,12 +123,14 @@
             "name": "MD5 Checksum"
           },
           "modified_source": {
-            "name": "Source of Date",
+            "name": "Source of Modified Time",
             "state": {
               "pdf_metadata": "PDF File Metadata",
               "http_header": "HTTP Header",
               "first_check": "First File Load Iime",
-              "checksum": "Checksum Changed"
+              "checksum": "Checksum Changed",
+              "file_modification_time": "File Modified Time",
+              "upload": "Upload Time"
             }
           }
         }
@@ -118,23 +138,20 @@
     }
   },
   "exceptions": {
-    "http_error": {
-      "message": "Cannot access pdf: {exc}"
-    },
-    "unable_to_parse": {
-      "message": "Unable to parse pdf: {exc}"
+    "pdf_error": {
+      "message": "Error opening PDF for \"{conf}\": {msg}"
     },
     "index_error": {
-      "message": "Page {page} doesn't appear to exist in {conf}"
+      "message": "Page(s) {pages} doesn't appear to exist in {conf}"
     },
     "no_matches": {
       "message": "No matches found using {regex} on {conf}"
     },
     "pattern_error": {
-      "message": "Regex pattern error: {exc_msg} using {regex} on {conf}"
+      "message": "Regex pattern error: {msg} using {regex} on {conf}"
     },
     "template_error": {
-      "message": "Template error: {exc_msg} on {conf}"
+      "message": "Template error: {msg} on {conf}"
     }
   },
   "selector": {
@@ -206,6 +223,95 @@
         "measurement_angle": "Measurement angle",
         "total": "Total",
         "total_increasing": "Total increasing"
+      }
+    }
+  },
+  "services":{
+    "upload_pdf": {
+      "name": "Upload an Updated PDF",
+      "description": "Upload a new version of a configured PDF source. Either config_entry_id (Configuration Entry) or device_id (Device) must be selected but not both.",
+      "fields": {
+        "config_entry_id":  {
+          "name": "Configuration Entry of PDF to Update",
+          "description": "Either configuration entry or device must be selected."
+        },
+        "device_id":  {
+          "name": "Device of PDF to Update",
+          "description": "Either device or configuration entry must be selected."
+        },
+        "file": {
+          "name": "PDF File to Upload",
+          "description": "PDF File containing data to scrape."
+        }
+      }
+    }
+  },
+  "issues":{
+    "pdf_error": {
+      "title": "Error Opening PDF ({conf})",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Error Opening PDF ({conf})",
+            "description": "{msg}  \n  \nReconfigure PDF?"
+          }
+        }
+      }
+    },
+    "index_error": {
+      "title": "Page(s) Out of Range ({conf})",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Page(s) Out of Range ({conf})",
+            "description": "{msg}  \n  \nContinue?"
+          }
+        },
+        "abort": {
+          "manual_fix": "This issue requires a manual fix. Please open the subentry configuration, and change the settings to fix this issue."
+        }
+      }
+    },
+    "pattern_error": {
+      "title": "Regular Expression Error ({conf})",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Regular Expression Error ({conf})",
+            "description": "{msg}  \n  \nContinue?"
+          }
+        },
+        "abort": {
+          "manual_fix": "This issue requires a manual fix. Please open the subentry configuration, and change the settings to fix this issue."
+        }
+      }
+    },
+    "no_matches": {
+      "title": "No Matches Found ({conf})",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "No Matches Found ({conf})",
+            "description": "{msg}  \n  \nContinue?"
+          }
+        },
+        "abort": {
+          "manual_fix": "This issue requires a manual fix. Please open the subentry configuration, and change the settings to fix this issue."
+        }
+      }
+    },
+    "template_error": {
+      "title": "Template Error ({conf})",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Template Error ({conf})",
+            "description": "{msg}  \n  \nContinue?"
+          }
+        },
+        "abort": {
+          "manual_fix": "This issue requires a manual fix. Please open the subentry configuration, and change the settings to fix this issue."
+        }
       }
     }
   }

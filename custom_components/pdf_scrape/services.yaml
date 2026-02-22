@@ -1,0 +1,17 @@
+upload_pdf:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: pdf_scrape
+    device_id:
+      required: false
+      selector:
+        device:
+          integration: pdf_scrape
+    file:
+      required: true
+      selector:
+        file:
+          accept: "application/pdf,.pdf"

@@ -4,12 +4,14 @@ from collections.abc import Callable, Mapping
 from datetime import timedelta
 import logging
 from logging import Logger
+from pathlib import Path
 import re
 from typing import Any, cast
 
 import voluptuous as vol
 
 from homeassistant.components import websocket_api
+from homeassistant.components.file_upload import process_uploaded_file
 from homeassistant.components.sensor import (
     CONF_STATE_CLASS,
     DEVICE_CLASS_UNITS,
@@ -22,6 +24,7 @@ from homeassistant.config_entries import (
     SOURCE_RECONFIGURE,
     SOURCE_USER,
     ConfigEntry,
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
     ConfigSubentryFlow,
@@ -32,16 +35,25 @@ from homeassistant.const import (
     CONF_ICON,
     CONF_NAME,
     CONF_SCAN_INTERVAL,
+    CONF_TYPE,
     CONF_UNIT_OF_MEASUREMENT,
     CONF_URL,
 )
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.config_validation import matches_regex, url
+from homeassistant.helpers.config_validation import (
+    isfile,
+    matches_regex,
+    path as pathcheck,
+    url,
+)
 from homeassistant.helpers.entity import CalculatedState
+import homeassistant.helpers.issue_registry as ir
 from homeassistant.helpers.selector import (
     DurationSelector,
     DurationSelectorConfig,
+    FileSelector,
+    FileSelectorConfig,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
@@ -56,14 +68,27 @@ from homeassistant.helpers.template import Template, TemplateError, TemplateVars
 from . import PDFScrapeConfigEntry
 from .const import (
     CONF_DEFAULT_SCAN_INTERVAL,
+    CONF_FILE,
     CONF_MIN_SCAN_INTERVAL,
-    CONF_PDF_PAGE,
+    CONF_PDF_PAGES,
     CONF_REGEX_MATCH_INDEX,
     CONF_REGEX_SEARCH,
     CONF_VALUE_TEMPLATE,
     DOMAIN,
+    REGEX_PAGE_RANGE_PATTERN,
+    URL_FILE_INTEGRATION,
+    ConfType,
+    ErrorTypes,
 )
-from .pdf import HTTPError, PDFParseError, PDFScrape
+from .pdf import (
+    FileError,
+    HTTPError,
+    PDFParseError,
+    PDFScrape,
+    PDFScrapeHTTP,
+    PDFScrapeLocal,
+    PDFScrapeUpload,
+)
 
 _LOGGER: Logger = logging.getLogger(__name__)
 
@@ -72,6 +97,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
     """PDF Scrape Config Flow Class."""
 
     VERSION: int = 1
+    MINOR_VERSION: int = 2
 
     @classmethod
     @callback
@@ -85,9 +111,18 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle config flow."""
-        return await self._async_configure(user_input)
+        return self.async_show_menu(
+            step_id="user", menu_options=list(ConfType), sort=True
+        )
 
-    async def _async_configure(
+    def _async_clear_issue(self) -> None:
+        ir.async_delete_issue(
+            self.hass,
+            DOMAIN,
+            f"{ErrorTypes.PDF_ERROR}_{self._get_reconfigure_entry().entry_id}",
+        )
+
+    async def async_step_http(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle config flow."""
@@ -103,12 +138,16 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
             else:
                 try:
                     url(user_input[CONF_URL])
-                    await PDFScrape.pdfscrape(user_input[CONF_URL])
+                    pdf: PDFScrapeHTTP = await PDFScrapeHTTP.pdfscrape(
+                        self.hass, user_input[CONF_URL]
+                    )
+                    pdf.close()
                     # Store the token in the config entry data
                     title: str = user_input.get(CONF_NAME, user_input[CONF_URL])
                     data: dict[str, Any] = {
                         CONF_URL: user_input[CONF_URL],
                         CONF_SCAN_INTERVAL: {"seconds": td.total_seconds()},
+                        CONF_TYPE: ConfType.HTTP,
                     }
                     if user_input.get(CONF_NAME):
                         data[CONF_NAME] = user_input[CONF_NAME]
@@ -125,7 +164,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
                         await self.async_set_unique_id(
                             f"{DOMAIN}_{user_input[CONF_URL]}"
                         )
-                        # self._abort_if_unique_id_mismatch()
+                        self._async_clear_issue()
                         return self.async_update_reload_and_abort(
                             self._get_reconfigure_entry(),
                             title=title,
@@ -134,12 +173,12 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
                     _LOGGER.error("Accessed from invalid source: %s", self.source)
                     errors["base"] = "invalid_source"
                 except vol.Invalid:
-                    errors["base"] = "invalid_url"
+                    errors[CONF_URL] = "invalid_url"
                 except PDFParseError:
-                    errors["base"] = "pdf_parse"
-                except HTTPError as err:
-                    _LOGGER.warning("HTTP Error %s", err)
-                    errors["base"] = "http_error"
+                    errors[CONF_URL] = "pdf_parse"
+                except FileError as err:
+                    _LOGGER.warning("File/OS Error %s", err)
+                    errors[CONF_FILE] = "file_error"
         flow_schema: vol.Schema = vol.Schema(
             {
                 vol.Optional(CONF_NAME): TextSelector(),
@@ -152,19 +191,30 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
             }
         )
         if self.source == SOURCE_RECONFIGURE:
-            flow_schema = self.add_suggested_values_to_schema(
-                flow_schema, self._get_reconfigure_entry().data
-            )
+            data: dict[str, Any] = self._get_reconfigure_entry().data.copy()
+            hours, remainder = divmod(data[CONF_SCAN_INTERVAL]["seconds"], 3600)
+            minutes, seconds = divmod(remainder, 60)
+            data[CONF_SCAN_INTERVAL] = {
+                "hours": hours,
+                "minutes": minutes,
+                "seconds": seconds,
+            }
+            flow_schema = self.add_suggested_values_to_schema(flow_schema, data)
         else:
+            hours, remainder = divmod(CONF_DEFAULT_SCAN_INTERVAL.total_seconds(), 3600)
+            minutes, seconds = divmod(remainder, 60)
             flow_schema = self.add_suggested_values_to_schema(
                 flow_schema,
                 {
                     CONF_SCAN_INTERVAL: {
-                        "seconds": CONF_DEFAULT_SCAN_INTERVAL.total_seconds()
+                        "hours": hours,
+                        "minutes": minutes,
+                        "seconds": seconds,
                     }
                 },
             )
         return self.async_show_form(
+            step_id="http",
             data_schema=flow_schema,
             errors=errors,
             description_placeholders={
@@ -172,11 +222,143 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
             },
         )
 
-    async def async_step_reconfigure(
+    async def async_step_upload(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Handle config flow."""
+        errors: dict[str, str] = {}
+        if user_input:
+            try:
+                with await self.hass.async_add_executor_job(
+                    process_uploaded_file, self.hass, user_input[CONF_FILE]
+                ) as pdf_path:
+                    # Assign a flow_id for now as the file is deleted when we are done.
+                    pdf: PDFScrapeUpload = await PDFScrapeUpload.pdfscrape(
+                        self.hass, path=pdf_path, config_entry_id=self.flow_id
+                    )
+                    title: str = (
+                        user_input.get(CONF_NAME) or pdf.metadata_name or "Uploaded PDF"
+                    )
+                    data: dict[str, Any] = {
+                        "temp_storage_id": self.flow_id,
+                        CONF_TYPE: ConfType.UPLOAD,
+                    }
+                    if self.source == SOURCE_USER:
+                        await self.async_set_unique_id(
+                            f"{DOMAIN}_{user_input[CONF_FILE]}"
+                        )
+                        self._abort_if_unique_id_configured()
+                        return self.async_create_entry(
+                            title=title,
+                            data=data,
+                        )
+                    if self.source == SOURCE_RECONFIGURE:
+                        await self.async_set_unique_id(
+                            f"{DOMAIN}_{user_input[CONF_FILE]}"
+                        )
+                        # self._abort_if_unique_id_mismatch()
+                        return self.async_update_reload_and_abort(
+                            self._get_reconfigure_entry(),
+                            title=title,
+                            data=data,
+                        )
+                _LOGGER.error("Accessed from invalid source: %s", self.source)
+                errors["base"] = "invalid_source"
+            except PDFParseError:
+                errors[CONF_FILE] = "pdf_parse"
+            except HTTPError as err:
+                _LOGGER.warning("HTTP Error %s", err)
+                errors[CONF_FILE] = "http_error"
+        flow_schema: vol.Schema = vol.Schema(
+            {
+                vol.Optional(CONF_NAME): TextSelector(),
+                vol.Required(CONF_FILE): FileSelector(
+                    FileSelectorConfig(accept="application/pdf,.pdf")
+                ),
+            }
+        )
+        if self.source == SOURCE_RECONFIGURE:
+            flow_schema = self.add_suggested_values_to_schema(
+                flow_schema, self._get_reconfigure_entry().data
+            )
+        return self.async_show_form(
+            data_schema=flow_schema,
+            errors=errors,
+        )
+
+    async def async_step_local(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle config flow."""
+        errors: dict[str, str] = {}
+        error_placeholders: dict[str, str] = {}
+        if user_input:
+            try:
+                await PDFScrapeLocal.pdfscrape(
+                    self.hass, path=Path(isfile(pathcheck(user_input[CONF_FILE])))
+                )
+                data: dict[str, Any] = {
+                    CONF_TYPE: ConfType.LOCAL,
+                    CONF_FILE: user_input[CONF_FILE],
+                }
+                title: str = (
+                    user_input.get(CONF_NAME) or user_input[CONF_FILE] or "Local PDF"
+                )
+                if self.source == SOURCE_USER:
+                    await self.async_set_unique_id(f"{DOMAIN}_{user_input[CONF_FILE]}")
+                    self._abort_if_unique_id_configured()
+                    return self.async_create_entry(
+                        title=title,
+                        data=data,
+                    )
+                if self.source == SOURCE_RECONFIGURE:
+                    await self.async_set_unique_id(f"{DOMAIN}_{user_input[CONF_FILE]}")
+                    # self._abort_if_unique_id_mismatch()
+                    self._async_clear_issue()
+                    return self.async_update_reload_and_abort(
+                        self._get_reconfigure_entry(),
+                        title=title,
+                        data=data,
+                    )
+                _LOGGER.error("Accessed from invalid source: %s", self.source)
+                errors["base"] = "invalid_source"
+            except PDFParseError:
+                errors[CONF_FILE] = "pdf_parse"
+            except (FileError, vol.Invalid) as err:
+                _LOGGER.warning("File Error %s", err)
+                if isinstance(err, vol.Invalid):
+                    error_placeholders[CONF_FILE] = err.msg
+                errors[CONF_FILE] = "file_error"
+        flow_schema: vol.Schema = vol.Schema(
+            {
+                vol.Optional(CONF_NAME): TextSelector(),
+                vol.Required(CONF_FILE): TextSelector(),
+            }
+        )
+        if self.source == SOURCE_RECONFIGURE:
+            flow_schema = self.add_suggested_values_to_schema(
+                flow_schema, self._get_reconfigure_entry().data
+            )
+        elif user_input is not None:
+            flow_schema = self.add_suggested_values_to_schema(flow_schema, user_input)
+        return self.async_show_form(
+            step_id="local",
+            data_schema=flow_schema,
+            errors=errors,
+            description_placeholders={
+                "url_file_integration": URL_FILE_INTEGRATION,
+                **error_placeholders,
+            },
+        )
+
+    async def async_step_reconfigure(self, user_input: None) -> ConfigFlowResult:
         """Handle reconf siguration."""
-        return await self._async_configure(user_input)
+        match self._get_reconfigure_entry().data[CONF_TYPE]:
+            case ConfType.HTTP:
+                return await self.async_step_http()
+            case ConfType.UPLOAD:
+                return await self.async_step_upload()
+        return await self.async_step_local()
 
 
 class TargetSubentryFlowHandler(ConfigSubentryFlow):
@@ -185,6 +367,8 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
     VERSION: int = 1
 
     data: dict[str, Any] = {}
+
+    pdf: PDFScrape
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
@@ -196,35 +380,60 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Get Page."""
-        if user_input:
-            self.data[CONF_PDF_PAGE] = int(user_input[CONF_PDF_PAGE])
-            return await self.async_step_regex(None)
+        errors: dict[str, str] = {}
 
         config_entry: PDFScrapeConfigEntry = self._get_entry()
-        pages: int = len(config_entry.runtime_data.pdf.pages)
-        opts: list[SelectOptionDict] = [
-            SelectOptionDict({"value": str(i), "label": f"{i + 1}"})
-            for i in range(pages)
-        ]
 
-        default_page: str = "0"
+        if config_entry.state == ConfigEntryState.LOADED:
+            self.pdf = config_entry.runtime_data.pdf
+        else:  # Repair pathway?
+            match config_entry.data[CONF_TYPE]:
+                case ConfType.HTTP:
+                    self.pdf = await PDFScrapeHTTP.pdfscrape(
+                        self.hass,
+                        config_entry.data[CONF_URL],
+                        config_entry_id=config_entry.entry_id,
+                    )
+                case ConfType.LOCAL:
+                    self.pdf = await PDFScrapeLocal.pdfscrape(
+                        self.hass,
+                        config_entry.data[CONF_FILE],
+                        config_entry_id=config_entry.entry_id,
+                    )
+                case ConfType.UPLOAD:
+                    self.pdf = await PDFScrapeUpload.pdfscrape(
+                        self.hass, config_entry_id=config_entry.entry_id
+                    )
+
+        if user_input:
+            if not re.match(REGEX_PAGE_RANGE_PATTERN, user_input[CONF_PDF_PAGES]):
+                errors[CONF_PDF_PAGES] = "invalid_page_range"
+            try:
+                self.pdf.get_pages(user_input[CONF_PDF_PAGES])
+            except IndexError:
+                errors[CONF_PDF_PAGES] = "pages_out_of_range"
+            if not errors:
+                self.data[CONF_PDF_PAGES] = user_input[CONF_PDF_PAGES]
+                return await self.async_step_regex(None)
+
+        default_pages: str = "1"
         if self.source == SOURCE_RECONFIGURE:
-            default_page = str(
-                self._get_reconfigure_subentry().data.get(CONF_PDF_PAGE, 0)
+            default_pages = str(
+                self._get_reconfigure_subentry().data.get(CONF_PDF_PAGES, 0)
             )
         return self.async_show_form(
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_PDF_PAGE, default=default_page): SelectSelector(
-                        SelectSelectorConfig(
-                            options=opts, mode=SelectSelectorMode.DROPDOWN
-                        )
-                    )
+                    vol.Required(CONF_PDF_PAGES, default=default_pages): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.TEXT)
+                    ),
                 }
             ),
             description_placeholders={
                 "title": self._get_entry().title,
+                "pages": len(self.pdf.pages),
             },
+            errors=errors,
             last_step=False,
             preview="target",
         )
@@ -240,9 +449,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
     ) -> SubentryFlowResult:
         """Get the regex."""
         errors: dict[str, str] = {}
-        pdf: PDFScrape = self._get_entry().runtime_data.pdf
-        pdf_page: int = self.data[CONF_PDF_PAGE]
-        text: str = pdf.pages[pdf_page]
+        text: str = self.pdf.get_pages(self.data[CONF_PDF_PAGES])
 
         if user_input and user_input.get(CONF_REGEX_SEARCH):
             # Validate that it's a valid regex
@@ -268,7 +475,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                     TextSelectorConfig(multiline=True)
                 ),
                 vol.Required("page_text", default=text): TextSelector(
-                    TextSelectorConfig(multiline=True)
+                    TextSelectorConfig(multiline=True, read_only=True)
                 ),
             }
         )
@@ -281,7 +488,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
             data_schema=schema,
             description_placeholders={
                 "title": self._get_entry().title,
-                CONF_PDF_PAGE: str(pdf_page + 1),
+                CONF_PDF_PAGES: self.data[CONF_PDF_PAGES],
             },
             last_step=False,
             errors=errors,
@@ -294,19 +501,19 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
         """Get the regex."""
         errors: dict[str, str] = {}
 
-        pdf: PDFScrape = self._get_entry().runtime_data.pdf
-        pdf_page: int = self.data[CONF_PDF_PAGE]
-        text: str = pdf.pages[pdf_page]
+        text: str = self.pdf.get_pages(self.data[CONF_PDF_PAGES])
 
         pattern: str | None = self.data.get(CONF_REGEX_SEARCH)
         matches: list[str] = re.findall(pattern, text) if pattern else []
 
         if user_input:
-            value: str = (
-                matches[int(user_input[CONF_REGEX_MATCH_INDEX])]
-                if matches
-                else pdf.pages[pdf_page]
-            )
+            value: str | list[str]
+            if matches and user_input.get(CONF_REGEX_MATCH_INDEX) != "-1":
+                value = matches[int(user_input[CONF_REGEX_MATCH_INDEX])]
+            elif matches:
+                value = matches
+            else:
+                value = text
             preview: PreviewSensorEntity | None = None
             errors, preview = _validate_step_matches(
                 self.hass, config=user_input, value=value
@@ -326,13 +533,21 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                         data=self.data | user_input,
                         unique_id=config_id,
                     )
-                return self.async_update_and_abort(
+                # Was there an issue?
+                iss_reg: ir.IssueRegistry = ir.async_get(self.hass)
+                for error_type in ErrorTypes:
+                    if issue := iss_reg.async_get_issue(
+                        DOMAIN,
+                        f"{error_type}_{self._get_entry().entry_id}_{self._get_reconfigure_subentry().subentry_id}",
+                    ):
+                        ir.async_delete_issue(self.hass, DOMAIN, issue.issue_id)
+
+                return self.async_update_reload_and_abort(
                     self._get_entry(),
                     self._get_reconfigure_subentry(),
                     title=user_input[CONF_NAME],
                     data=self.data | user_input,
                 )
-
         opts: list[SelectOptionDict] = []
 
         if len(matches) > 0:
@@ -340,6 +555,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                 SelectOptionDict({"value": str(i), "label": f"{i + 1}. {matches[i]}"})
                 for i in range(len(matches))
             ]
+            opts.insert(0, SelectOptionDict({"value": "-1", "label": "All Matches"}))
 
         step_schema = {vol.Required(CONF_NAME): TextSelector()}
 
@@ -433,7 +649,7 @@ def ws_start_preview(
     )
     if not config_entry:
         raise HomeAssistantError
-    pdf: PDFScrape = config_entry.runtime_data.pdf
+    # pdf: PDFScrape = config_entry.runtime_data.pdf
 
     errors: dict[str, str] = {}
 
@@ -460,19 +676,27 @@ def ws_start_preview(
         )
 
     page: int = 0
-    value: str | list[str] = ""
-    flow = cast(
+    value: str | None = None
+    flow: TargetSubentryFlowHandler = cast(
         TargetSubentryFlowHandler,
         hass.config_entries.subentries._progress.get(msg["flow_id"]),  # noqa: SLF001
     )
+    pdf: PDFScrape = flow.pdf
     preview: PreviewSensorEntity | None = None
     if step in ["user", "reconfigure"]:
-        user_input[CONF_NAME] = "Page Text"
+        user_input[CONF_NAME] = "Text"
         user_input[CONF_ICON] = "mdi:file-pdf-box"
-        page = int(user_input[CONF_PDF_PAGE])
-        value = pdf.pages[page - 1]
+        pages = user_input[CONF_PDF_PAGES]
+        if re.fullmatch(REGEX_PAGE_RANGE_PATTERN, pages) is None:
+            errors[CONF_PDF_PAGES] = "invalid_page_range"
+        else:
+            try:
+                value = pdf.get_pages(pages)
+            except IndexError:
+                errors[CONF_PDF_PAGES] = "invalid_page_range"
     else:
-        page = flow.data[CONF_PDF_PAGE]
+        pages = flow.data[CONF_PDF_PAGES]
+        value = pdf.get_pages(pages)
         if step == "regex":
             pattern: str | None = user_input.get(CONF_REGEX_SEARCH)
             if pattern:
@@ -481,11 +705,11 @@ def ws_start_preview(
                     matches_regex(user_input[CONF_REGEX_SEARCH])
                     matches: list[str] = re.findall(
                         user_input[CONF_REGEX_SEARCH],
-                        pdf.pages[page],
+                        value,
                     )
                     if len(matches) > 1:
                         user_input[CONF_NAME] = f"{len(matches)} Matches"
-                        value = " ^ ".join(matches)
+                        value = ", ".join(matches)
                     elif len(matches) == 1:
                         value = matches[0]
                         user_input[CONF_NAME] = "1 Match"
@@ -496,8 +720,7 @@ def ws_start_preview(
                     errors[CONF_REGEX_SEARCH] = str(ex.msg)
             else:
                 user_input[CONF_ICON] = "mdi:file-pdf-box"
-                user_input[CONF_NAME] = "Page Text"
-                value = pdf.pages[page]
+                user_input[CONF_NAME] = "Text"
         elif step == "matches":
             # Generate preview
             regex: str | None = flow.data.get(CONF_REGEX_SEARCH)
@@ -506,12 +729,14 @@ def ws_start_preview(
                     regex,
                     pdf.pages[page],
                 )
-                value = matches[int(user_input[CONF_REGEX_MATCH_INDEX])]
-            else:
-                value = pdf.pages[page]
-            errors, preview = _validate_step_matches(
-                hass, config=user_input, value=value
-            )
+                match_idx: int = int(user_input[CONF_REGEX_MATCH_INDEX])
+                if match_idx >= 0:
+                    value = matches[match_idx]
+                else:
+                    value = matches
+                errors, preview = _validate_step_matches(
+                    hass, config=user_input, value=value
+                )
         else:
             return
 
@@ -551,7 +776,7 @@ class PreviewSensorEntity(SensorEntity):
         self._attr_native_value = (
             value
             if not isinstance(value, str)
-            else (value if len(value) < 255 else value[:242] + "  <truncated>")
+            else (value if len(value) < 255 else value[:251] + "  ***")
         )
 
     @callback
@@ -577,7 +802,7 @@ class PreviewSensorEntity(SensorEntity):
         except ValueError as ex:
             errors = str(ex)
             if len(errors) > 255:
-                errors = errors[:242] + " <truncated>"
+                errors = errors[:250] + " ***"
         if errors:
             preview_callback(None, None, None, errors)
 
@@ -585,23 +810,23 @@ class PreviewSensorEntity(SensorEntity):
 
 
 def _validate_step_matches(
-    hass: HomeAssistant, config: dict[str, Any], value: str
+    hass: HomeAssistant, config: dict[str, Any], value: str | list[str]
 ) -> tuple[dict[str, str], PreviewSensorEntity | None]:
     """Validate the matches step."""
     errors: dict[str, str] = {}
     if not config.get(CONF_NAME):
-        errors[CONF_NAME] = "Name is required."
+        errors[CONF_NAME] = "Name is required"
     if value_temp := config.get(CONF_VALUE_TEMPLATE):
         try:
             val_tmp: Template = Template(value_temp, hass)
             variables: TemplateVarsType = {"value": value}
-            value = val_tmp.async_render(
-                variables=variables, parse_result=False, limited=True
-            )
+            value = val_tmp.async_render(variables=variables, parse_result=False)
         except vol.Invalid as ex:
             errors[CONF_VALUE_TEMPLATE] = str(ex.msg)
         except TemplateError as ex:
             errors[CONF_VALUE_TEMPLATE] = str(ex)
+    elif isinstance(value, list):
+        errors[CONF_VALUE_TEMPLATE] = "Template is required when using all matches"
     # Validate the unit of measurement
     try:
         config_flow._validate_unit(config)  # noqa: SLF001
