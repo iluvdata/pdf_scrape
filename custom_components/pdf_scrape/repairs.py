@@ -11,7 +11,8 @@ from homeassistant.config_entries import (
     ConfigFlowContext,
     ConfigFlowResult,
     FlowType,
-    #    SubentryFlowContext,
+    SubentryFlowContext,
+    SubentryFlowResult,
 )
 from homeassistant.core import HomeAssistant
 
@@ -40,7 +41,7 @@ class PDFScrapeRepairFlow(RepairsFlow):
             description_placeholders={"msg": self.data["msg"]},
         )
 
-    async def _async_get_next_flow(self) -> ConfigFlowResult:
+    async def _async_get_next_flow(self) -> data_entry_flow.FlowResult:
         raise NotImplementedError("Must be implemented by subclasses.")
 
 
@@ -48,32 +49,35 @@ class PDFRepairFlow(PDFScrapeRepairFlow):
     """Repair for PDF errors."""
 
     async def _async_get_next_flow(self) -> ConfigFlowResult:
-        next_flow: ConfigFlowResult = self.hass.config_entries.flow.async_init(
+        next_flow: ConfigFlowResult = await self.hass.config_entries.flow.async_init(
             DOMAIN,
             context=ConfigFlowContext(
                 entry_id=self.data["entry_id"], source=SOURCE_RECONFIGURE
             ),
         )
-        result: ConfigFlowResult = self.async_abort(reason="next_flow")
-        result["next_flow"] = (FlowType.CONFIG_FLOW, next_flow["flow_id"])
-        return result
+        return self.async_create_entry(
+            data={}, next_flow=(FlowType.CONFIG_FLOW, next_flow["flow_id"])
+        )
 
 
 class TargetRepairFlow(PDFScrapeRepairFlow):
     """Repair for Target Errors."""
 
-    async def _async_get_next_flow(self) -> ConfigFlowResult:
-        return self.async_abort(reason="manual_fix")
-
-    # async def _async_get_next_flow(self) -> ConfigFlowResult:
-    #     return await self.hass.config_entries.subentries.async_init(
-    #         (self.data["entry_id"], "target"),
-    #         context=SubentryFlowContext(
-    #             entry_id=self.data["entry_id"],
-    #             subentry_id=self.data["subentry_id"],
-    #             source=SOURCE_RECONFIGURE,
-    #         ),
-    #     )
+    async def _async_get_next_flow(self) -> SubentryFlowResult:
+        next_flow: SubentryFlowResult = (
+            await self.hass.config_entries.subentries.async_init(
+                (self.data["entry_id"], "target"),
+                context=SubentryFlowContext(
+                    entry_id=self.data["entry_id"],
+                    subentry_id=self.data["subentry_id"],
+                    source=SOURCE_RECONFIGURE,
+                ),
+            )
+        )
+        return self.async_create_entry(
+            data={},
+            next_flow=(FlowType.CONFIG_SUBENTRIES_FLOW, next_flow["flow_id"]),
+        )
 
 
 async def async_create_fix_flow(

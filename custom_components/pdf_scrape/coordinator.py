@@ -200,7 +200,7 @@ def async_raise_error(
     hass: HomeAssistant,
     error_key: str,
     config_entry: PDFScrapeConfigEntry,
-    exception: Exception,
+    exception: Exception | None = None,
     translation_placeholders: dict[str, Any] | None = None,
     config_subentry: ConfigSubentry | None = None,
 ) -> None:
@@ -211,11 +211,13 @@ def async_raise_error(
     translation_placeholders["conf"] = (
         config_entry.title if config_subentry is None else config_subentry.title
     )
-    msg = (
-        str(exception)
-        if not isinstance(exception, PDFParseError)
-        else "Unable to parse pdfS"
-    )
+    msg: str = ""
+    if exception is not None:
+        msg = (
+            str(exception)
+            if not isinstance(exception, PDFParseError)
+            else "Unable to parse pdf"
+        )
     translation_placeholders["msg"] = msg
     data: dict[str, Any] = {
         "entry_id": config_entry.entry_id,

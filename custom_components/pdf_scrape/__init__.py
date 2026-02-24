@@ -47,6 +47,7 @@ from .coordinator import (
     async_raise_error,
 )
 from .pdf import (
+    FileError,
     HTTPError,
     PDFParseError,
     PDFScrapeHTTP,
@@ -192,15 +193,11 @@ async def async_setup_entry(
 
         await coordinator.async_config_entry_first_refresh()
 
-        config_entry.async_on_unload(
-            config_entry.add_update_listener(_async_update_listener)
-        )
-
         config_entry.runtime_data = coordinator
 
         await hass.config_entries.async_forward_entry_setups(config_entry, _PLATFORMS)
 
-    except (HTTPError, TimeoutError, PDFParseError) as ex:
+    except (HTTPError, TimeoutError, PDFParseError, FileError) as ex:
         async_raise_error(
             hass=hass,
             error_key=ErrorTypes.PDF_ERROR,
@@ -232,14 +229,6 @@ async def async_migrate_entry(
         )
 
     return True
-
-
-async def _async_update_listener(
-    hass: HomeAssistant, config_entry: PDFScrapeConfigEntry
-):
-    """Handle config options update."""
-    # Reload the integration when the options change.
-    await hass.config_entries.async_reload(config_entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

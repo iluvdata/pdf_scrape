@@ -199,7 +199,13 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
                 "minutes": minutes,
                 "seconds": seconds,
             }
-            flow_schema = self.add_suggested_values_to_schema(flow_schema, data)
+            flow_schema = self.add_suggested_values_to_schema(
+                flow_schema,
+                {
+                    **self._get_reconfigure_entry().data,
+                    CONF_NAME: self._get_reconfigure_entry().title,
+                },
+            )
         else:
             hours, remainder = divmod(CONF_DEFAULT_SCAN_INTERVAL.total_seconds(), 3600)
             minutes, seconds = divmod(remainder, 60)
@@ -279,7 +285,11 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         if self.source == SOURCE_RECONFIGURE:
             flow_schema = self.add_suggested_values_to_schema(
-                flow_schema, self._get_reconfigure_entry().data
+                flow_schema,
+                {
+                    **self._get_reconfigure_entry().data,
+                    CONF_NAME: self._get_reconfigure_entry().title,
+                },
             )
         return self.async_show_form(
             data_schema=flow_schema,
@@ -337,7 +347,11 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         if self.source == SOURCE_RECONFIGURE:
             flow_schema = self.add_suggested_values_to_schema(
-                flow_schema, self._get_reconfigure_entry().data
+                flow_schema,
+                {
+                    **self._get_reconfigure_entry().data,
+                    CONF_NAME: self._get_reconfigure_entry().title,
+                },
             )
         elif user_input is not None:
             flow_schema = self.add_suggested_values_to_schema(flow_schema, user_input)

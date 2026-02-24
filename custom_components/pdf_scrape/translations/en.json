@@ -266,9 +266,6 @@
             "title": "Page(s) Out of Range ({conf})",
             "description": "{msg}  \n  \nContinue?"
           }
-        },
-        "abort": {
-          "manual_fix": "This issue requires a manual fix. Please open the subentry configuration, and change the settings to fix this issue."
         }
       }
     },
@@ -280,9 +277,6 @@
             "title": "Regular Expression Error ({conf})",
             "description": "{msg}  \n  \nContinue?"
           }
-        },
-        "abort": {
-          "manual_fix": "This issue requires a manual fix. Please open the subentry configuration, and change the settings to fix this issue."
         }
       }
     },
@@ -294,9 +288,6 @@
             "title": "No Matches Found ({conf})",
             "description": "{msg}  \n  \nContinue?"
           }
-        },
-        "abort": {
-          "manual_fix": "This issue requires a manual fix. Please open the subentry configuration, and change the settings to fix this issue."
         }
       }
     },
@@ -308,9 +299,6 @@
             "title": "Template Error ({conf})",
             "description": "{msg}  \n  \nContinue?"
           }
-        },
-        "abort": {
-          "manual_fix": "This issue requires a manual fix. Please open the subentry configuration, and change the settings to fix this issue."
         }
       }
     }
