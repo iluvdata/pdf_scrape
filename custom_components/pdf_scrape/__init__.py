@@ -34,6 +34,7 @@ from .const import (
     CONF_MD5_CHECKSUM,
     CONF_MODIFIED,
     CONF_MODIFIED_SOURCE,
+    CONF_PDF_PAGES,
     DOMAIN,
     ConfType,
     ErrorTypes,
@@ -152,9 +153,9 @@ async def async_setup_entry(
     """Set up the config entry."""
     try:
         coordinator: PDFScrapeCoordinator
-        match config_entry.data.get(
-            CONF_TYPE, ConfType.HTTP
-        ):  # Default to HTTP if type is not set (for legacy entries)
+        match config_entry.data[
+            CONF_TYPE
+        ]:  # Default to HTTP if type is not set (for legacy entries)
             case ConfType.HTTP:
                 pdfhttp: PDFScrapeHTTP = await PDFScrapeHTTP.pdfscrape(
                     hass,
@@ -233,6 +234,18 @@ async def async_migrate_entry(
         hass.config_entries.async_update_entry(
             config_entry, data=new_data, version=1, minor_version=2
         )
+
+        if config_entry.subentries:
+            for subentry in config_entry.subentries:
+                if pdf_page := subentry.data.get("page_page"):
+                    new_data: dict[str, Any] = {**subentry.data}
+                    new_data[CONF_PDF_PAGES] = pdf_page
+                    new_data.pop("page_page")
+                    hass.config_entries.async_update_subentry(
+                        config_entry,
+                        subentry,
+                        data=new_data,
+                    )
 
     return True
 

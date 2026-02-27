@@ -366,6 +366,8 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
 
     VERSION: int = 1
 
+    MINOR_VERSION: int = 2
+
     data: dict[str, Any] = {}
 
     pdf: PDFScrape
