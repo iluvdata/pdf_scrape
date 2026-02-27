@@ -220,7 +220,7 @@ async def async_migrate_entry(
         new_data: dict[str, Any] = {**config_entry.data}
         # Move data to store and remove from config_entry data
         data: StoredFile = {}
-        for k, v in new_data.items():
+        for k, v in config_entry.data.items():
             if k in [CONF_MODIFIED, CONF_MODIFIED_SOURCE, CONF_MD5_CHECKSUM]:
                 data[k] = v
                 del new_data[k]
