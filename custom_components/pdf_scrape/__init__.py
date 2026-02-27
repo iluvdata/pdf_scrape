@@ -214,42 +214,6 @@ async def async_setup_entry(
     return True
 
 
-async def async_migrate_entry(
-    hass: HomeAssistant, config_entry: PDFScrapeConfigEntry
-) -> bool:
-    """Check for config migration."""
-
-    if config_entry.version == 1 and config_entry.minor_version == 1:
-        new_data: dict[str, Any] = {**config_entry.data}
-        # Move data to store and remove from config_entry data
-        data: StoredFile = {}
-        for k, v in config_entry.data.items():
-            if k in [CONF_MODIFIED, CONF_MODIFIED_SOURCE, CONF_MD5_CHECKSUM]:
-                data[k] = v
-                del new_data[k]
-        store: Store[StoredFile] = get_store(hass, config_entry.entry_id)
-        await store.async_save(data)
-        new_data[CONF_TYPE] = ConfType.HTTP
-
-        if config_entry.subentries:
-            for subentry in config_entry.subentries.values():
-                if pdf_page := subentry.data.get("pdf_page"):
-                    new_data: dict[str, Any] = {**subentry.data}
-                    new_data[CONF_PDF_PAGES] = pdf_page
-                    del new_data["pdf_page"]
-                    hass.config_entries.async_update_subentry(
-                        config_entry,
-                        subentry,
-                        data=new_data,
-                    )
-
-        hass.config_entries.async_update_entry(
-            config_entry, data=new_data, version=1, minor_version=2
-        )
-
-    return True
-
-
 async def _async_update_listener(
     hass: HomeAssistant, config_entry: PDFScrapeConfigEntry
 ):
