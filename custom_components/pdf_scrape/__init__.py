@@ -237,10 +237,10 @@ async def async_migrate_entry(
 
         if config_entry.subentries:
             for subentry in config_entry.subentries.values():
-                if pdf_page := subentry.data.get("page_page"):
+                if pdf_page := subentry.data.get("pdf_page"):
                     new_data: dict[str, Any] = {**subentry.data}
                     new_data[CONF_PDF_PAGES] = pdf_page
-                    new_data.pop("page_page")
+                    del new_data["pdf_page"]
                     hass.config_entries.async_update_subentry(
                         config_entry,
                         subentry,
