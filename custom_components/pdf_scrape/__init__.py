@@ -231,10 +231,6 @@ async def async_migrate_entry(
         await store.async_save(data)
         new_data[CONF_TYPE] = ConfType.HTTP
 
-        hass.config_entries.async_update_entry(
-            config_entry, data=new_data, version=1, minor_version=2
-        )
-
         if config_entry.subentries:
             for subentry in config_entry.subentries.values():
                 if pdf_page := subentry.data.get("pdf_page"):
@@ -246,6 +242,10 @@ async def async_migrate_entry(
                         subentry,
                         data=new_data,
                     )
+
+        hass.config_entries.async_update_entry(
+            config_entry, data=new_data, version=1, minor_version=2
+        )
 
     return True
 
