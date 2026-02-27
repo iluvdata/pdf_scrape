@@ -152,7 +152,9 @@ async def async_setup_entry(
     """Set up the config entry."""
     try:
         coordinator: PDFScrapeCoordinator
-        match config_entry.data[CONF_TYPE]:
+        match config_entry.data.get(
+            CONF_TYPE, ConfType.HTTP
+        ):  # Default to HTTP if type is not set (for legacy entries)
             case ConfType.HTTP:
                 pdfhttp: PDFScrapeHTTP = await PDFScrapeHTTP.pdfscrape(
                     hass,
@@ -226,6 +228,7 @@ async def async_migrate_entry(
                 del new_data[k]
         store: Store[StoredFile] = get_store(hass, config_entry.entry_id)
         await store.async_save(data)
+        new_data[CONF_TYPE] = ConfType.HTTP
 
         hass.config_entries.async_update_entry(
             config_entry, data=new_data, version=1, minor_version=2
