@@ -28,8 +28,8 @@ from .pdf import (
     HTTPError,
     PDFParseError,
     PDFScrape,
+    PDFScrapeFile,
     PDFScrapeHTTP,
-    PDFScrapeLocal,
     PDFScrapeUpload,
 )
 
@@ -65,14 +65,15 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
         """Perform the update."""
         try:
             if not self.data or await self.pdf.update():
-                for subentry_conf_key in self.config_entry.subentries:
-                    subentry_conf: ConfigSubentry = self.config_entry.subentries[
-                        subentry_conf_key
-                    ]
+                for subentry_key, subentry_conf in self.config_entry.subentries.items():
+                    if subentry_conf.subentry_type == "document":
+                        continue
 
                     txt: str = ""
                     try:
-                        txt = self.pdf.get_pages(subentry_conf.data[CONF_PDF_PAGES])
+                        txt = await self.pdf.get_pages(
+                            subentry_conf.data[CONF_PDF_PAGES]
+                        )
                     except IndexError as ex:
                         async_raise_error(
                             hass=self.hass,
@@ -133,8 +134,9 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
                                 exception=ex,
                                 config_subentry=subentry_conf,
                             )
-                    self.data[subentry_conf_key] = txt
+                    self.data[subentry_key] = txt
         except (HTTPError, PDFParseError) as ex:
+            # TODO: if http error do we retry?
             async_raise_error(
                 hass=self.hass,
                 error_key=ErrorTypes.PDF_ERROR,
@@ -183,14 +185,14 @@ class PDFScrapeUploadCoordinator(PDFScrapeCoordinator):
         await self._async_update_data()
 
 
-class PDFScrapeLocalCoordinator(PDFScrapeCoordinator):
+class PDFScrapeFileCoordinator(PDFScrapeCoordinator):
     """Data coordinator to download and parse the files."""
 
     def __init__(
         self,
         hass: HomeAssistant,
         config_entry: PDFScrapeConfigEntry,
-        pdf: PDFScrapeLocal,
+        pdf: PDFScrapeFile,
     ) -> None:
         """Initialize coordinator."""
         super().__init__(hass, config_entry, pdf, CONF_MIN_SCAN_INTERVAL)

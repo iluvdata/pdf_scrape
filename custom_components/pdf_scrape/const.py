@@ -5,6 +5,8 @@ from enum import StrEnum
 from re import Pattern
 from typing import Final
 
+from homeassistant.config_entries import ConfigSubentry
+
 CONF_DEFAULT_SCAN_INTERVAL: Final[timedelta] = timedelta(minutes=5)
 CONF_MIN_SCAN_INTERVAL: Final[timedelta] = timedelta(seconds=30)
 DOMAIN: Final[str] = "pdf_scrape"
@@ -12,10 +14,11 @@ CONF_PDF_PAGES: Final[str] = "pdf_pages"
 CONF_REGEX_SEARCH: Final[str] = "regex_search"
 CONF_REGEX_MATCH_INDEX: Final[str] = "regex_match_index"
 CONF_VALUE_TEMPLATE: Final[str] = "value_template"
-CONF_MD5_CHECKSUM: Final = "md5_checksum"
+CONF_SHA256_CHECKSUM: Final = "sha256_checksum"
 CONF_MODIFIED: Final[str] = "modified"
 CONF_MODIFIED_SOURCE: Final[str] = "modified_source"
 CONF_FILE: Final[str] = "file"
+CONF_OCR: Final[str] = "ocr"
 
 
 class ErrorTypes(StrEnum):
@@ -39,3 +42,8 @@ class ConfType(StrEnum):
     HTTP = "http"
     UPLOAD = "upload"
     LOCAL = "local"
+
+
+DOCUMENT_SUBENTRY: ConfigSubentry = ConfigSubentry(
+    subentry_type="document", title="PDF", unique_id="document", data={}
+)

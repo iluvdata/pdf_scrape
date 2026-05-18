@@ -18,7 +18,7 @@
           "scan_interval": "Update Interval"
         },
         "data_description": {
-          "name": "If name not provided, the URL will be used as name",
+          "name": "If name not provided, will attempt to assign the name from the PDF metadata or URL will be used as name",
           "url": "URL (http:// or https:// only)",
           "scan_interval": "Minimum is {min_int}"
         }
@@ -49,15 +49,26 @@
     },
     "error": {
       "invalid_url": "Bad URL",
-      "pdf_parse": "Cannot parse PDF",
-      "http_error": "Cannot access PDF @ provided URL",
+      "http_error": "Cannot access PDF @ provided URL: {msg}",
       "invalid_source": "Accessed configuration from an invalid flow",
       "unknown": "Unknown error",
-      "file_error": "File access error: {file}"
+      "file_error": "File access error: {msg}",
+      "pdf_parse": "Cannot parse PDF: {msg}",
+      "exception": "Error: {msg}"
+    },
+    "progress": {
+      "pdf_process": "Processing PDF ..."
     },
     "abort": {
       "already_configured": "PDF is already configured",
-      "reconfigure_successful": "PDF Reconfiguration successful."
+      "http_already_configured": "A PDF @ {url} is already configured",
+      "upload_already_configured": "A PDF with the same sha256 checksum is already uploaded. While there is an exceedingly small chance that 2 different pdf files will have the same checksum it's very unlikely.  If you are certain that they pdf files are different, alter the metadata of the pdf file you are uploading which will create a unique checksum.",
+      "file_already_configured": "A PDF @ {file} is already configured",
+      "reconfigure_successful": "PDF Reconfiguration successful.",
+      "pdf_parse": "[%key:component::pdf_scrape::config::error::pdf_parse%]",
+      "exception": "[%key:component::pdf_scrape::config::error::exception%]",
+      "http_error": "[%key:component::pdf_scrape::config::error::http_error%]",
+      "file_error": "[%key:component::pdf_scrape::config::error::file_error%]"
     }
   },
   "config_subentries": {
@@ -68,16 +79,18 @@
       "entry_type": "Scrape Target",
       "step": {
         "user": {
-          "title": "Target Page",
+          "title": "Target Page(s)",
           "description": "{title}",
           "data": {
-            "pdf_pages": "Pages"
+            "pdf_pages": "Pages",
+            "ocr": "Use OCR (use with caution)"
           },
           "data_description": {
-            "pdf_pages": "Pages in PDF: {pages}. Use comma to separate multiple pages or hyphen for page ranges (e.g., 1,3-5,7)."
+            "pdf_pages": "Pages in PDF: {pages}. Use comma to separate multiple pages or hyphen for page ranges (e.g., 1,3-5,7).",
+            "ocr": "Use OCR to extract text.  This can be very slow and resource intensive, particularly for a large number of pages.  Use only if the PDF contains images and text extraction is not working.  OCR results can be highly variable and may not produce usable results depending on the quality of the source PDF.  Currently only English documents are supported. When possible, consider using an OCR tool prior to configuring the PDF in Home Assistant. \n \n This is disabled until tesseract is available."
           }
         },
-        "regex": {
+        "select": {
           "title": "Regular Expression",
           "description": "Pages {pdf_pages}: {title}",
           "data": {
@@ -88,12 +101,12 @@
             "regex_search": "Leave blank to use all text on selected page"
           }
         },
-        "matches": {
+        "sensor": {
           "title": "Configure Sensor",
           "data": {
             "name": "Name",
             "regex_match_index": "Select match",
-            "value_template": "Template",
+            "value_template": "Limited Template",
             "unit_of_measurement": "Unit of Measurement",
             "device_class": "Device Class",
             "state_class": "State Class",
@@ -247,6 +260,28 @@
     }
   },
   "issues":{
+    "test_issue": {
+      "title": "Test Issue",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Test Issue",
+            "description": "{msg}  \n  \nReconfigure PDF?"
+          }
+        }
+      }
+    },
+    "test_issue_a": {
+      "title": "Test Issue A",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Test Issue A",
+            "description": "{msg}  \n  \nReconfigure PDF?"
+          }
+        }
+      }
+    },
     "pdf_error": {
       "title": "Error Opening PDF ({conf})",
       "fix_flow": {

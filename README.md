@@ -1,4 +1,4 @@
-# ![PDFScrape Logo](logo.svg) Integration
+# PDFScrape Integration
 
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg?style=flat-square&logo=homeassistantcommunitystore)](https://hacs.xyz/)
@@ -18,8 +18,6 @@ Configuration via Homeassistant UI.
 ## Installation with HACS
 
 The recommended way to install this is via HACS:
-
-
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?category=custom_respository&owner=iluvdata&repository=pdf_scrape)
 

@@ -1,30 +1,31 @@
-"""PDFScrape API."""
+"""PDF Scrape File Handling."""
 
 from abc import ABC, abstractmethod
+from asyncio import Task, TaskGroup
 import datetime
 from enum import StrEnum
 from functools import partial
-from hashlib import md5
-from io import BufferedReader, BytesIO
+from hashlib import file_digest
+from io import BytesIO
+import logging
 from pathlib import Path
-from typing import IO, Any, Final, cast
+import re
+from typing import Final
 
-from aiohttp import (
-    ClientConnectorError,
-    ClientResponse,
-    ClientResponseError,
-    ClientSession,
-)
-from pypdf import DocumentInformation, PdfReader
-from pypdf.errors import PyPdfError
+from httpx import HTTPStatusError, RequestError, Response
+from PIL import Image
+from pydantic import BaseModel, Field
+from pymupdf import Document, Pixmap, TextPage
 
-from homeassistant.components.hassio import async_get_clientsession
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.storage import Store
+from homeassistant.helpers.httpx_client import get_async_client
+from homeassistant.helpers.storage import STORAGE_DIR, Store
 
 from .const import DOMAIN
 
 STORE_VERSION: Final[int] = 1
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class ModifiedDateSource(StrEnum):
@@ -38,14 +39,97 @@ class ModifiedDateSource(StrEnum):
     UPLOAD = "upload"
 
 
-type StoredFile = dict[
-    str, list[str] | datetime.datetime | ModifiedDateSource | str | None
-]
+class PDF(BaseModel):
+    """Class for the stored file in storage."""
+
+    modified: datetime.datetime | None = None
+    title: str | None = None
+    sha256_checksum: str | None = None
+    modified_source: ModifiedDateSource | None = None
+    page_count: int = 0
+    pages: dict[int, PDFPage] = {}
+    http_headers: HTTPHeaders | None = None
+    loaded_from_store: bool = Field(exclude=True, default=False)
 
 
-def get_store(hass: HomeAssistant, key: str) -> Store[StoredFile]:
+class HTTPHeaders(BaseModel):
+    """Class for HTTP headers (to avoid constantly fetching the entire pdf)."""
+
+    last_modified: datetime.datetime
+    content_length: int
+
+
+class PDFPage(BaseModel):
+    """Class for a PDF Page."""
+
+    ocr: bool
+    text: str
+
+
+def get_store(hass: HomeAssistant, key: str) -> Store[PDF]:
     """Get a store."""
-    return Store[StoredFile](hass, STORE_VERSION, f"{DOMAIN}_{key}")
+    return Store[PDF](hass, STORE_VERSION, f"{DOMAIN}_{key}")
+
+
+class Progress:
+    """Class to track progress of loading and processing the pdf."""
+
+    def __init__(self) -> None:
+        """Initialize progress."""
+        self._progress_tasks: list[(float, float)] = []
+        self._cur_task_index: int = 0
+
+    def define_tasks(self, tasks: list[float]) -> None:
+        """Add a progress task."""
+        if 0 in tasks:
+            raise ValueError("task estimates must be > 0")
+        if not sum(tasks) == 1:
+            raise ValueError("task estimate must sum to 1")
+        if len(self._progress_tasks) == 0:
+            self._progress_tasks = [(task, 0) for task in tasks]
+            return
+        # Normalize the task estimates so they add up to 1
+        normalized_tasks: list[float] = [
+            task * self._progress_tasks[self._cur_task_index][0] for task in tasks
+        ]
+        old_tasks = self._progress_tasks.copy()
+        for i, pt in enumerate(
+            old_tasks[self._cur_task_index :], start=self._cur_task_index
+        ):
+            if i == self._cur_task_index:
+                for j, task in enumerate(normalized_tasks):
+                    if i + j < len(self._progress_tasks):
+                        self._progress_tasks[i + j] = (task, 0)
+                    else:
+                        self._progress_tasks.append((task, 0))
+            elif i + len(tasks) < len(self._progress_tasks):
+                self._progress_tasks[i + len(tasks)] = pt
+            else:
+                self._progress_tasks.append(pt)
+
+    def clear_tasks(self) -> None:
+        """Clear the task list."""
+        self._progress_tasks = []
+        self._cur_task_index = 0
+
+    @property
+    def progress(self) -> float:
+        """Get the current progress."""
+        return sum([cur for _, cur in self._progress_tasks])
+
+    def advance_steps(self, tasks: int = 1) -> float:
+        """Notify progress listeners."""
+        for i in range(self._cur_task_index, self._cur_task_index + tasks):
+            self._progress_tasks[i] = (
+                self._progress_tasks[i][0],
+                self._progress_tasks[i][0],
+            )
+        self._cur_task_index += tasks
+        update: float = self.progress
+        if update == 1:
+            self.clear_tasks()
+        _LOGGER.debug("Progress updated: %s", update)
+        return update
 
 
 class PDFScrape(ABC):
@@ -54,104 +138,213 @@ class PDFScrape(ABC):
     def __init__(self, hass: HomeAssistant, config_entry_id: str | None) -> None:
         """Called by classmethod with is called by the subclass."""
         self.hass: HomeAssistant = hass
-        self.pages: list[str] = []
-        self.modified: datetime.datetime | None = None
-        self.modified_source: ModifiedDateSource | None = None
-        self.metadata_name: str | None = None
-        self.md5_checksum: str
-        self.stored_file: StoredFile | None = None
+        self._document: Document
+        self.pdf: PDF = PDF()
         self.config_entry_id: str | None = config_entry_id
-        # if config_entry_id is None that means this a config flow and so just sents the file
-        self.store: Store[StoredFile] | None = (
+        self._stream: BytesIO
+        self._progress = Progress()
+
+        # if config_entry_id is None that means this a config flow and so just sends the file
+        self.store: Store[PDF] | None = (
             get_store(hass, self.config_entry_id)
             if self.config_entry_id is not None
             else None
         )
 
+    @property
+    def progress(self) -> float:
+        """Get the progress in progress."""
+        return self._progress.progress
+
     async def _pdf_scrape(self):
         if self.store is not None:
-            self.stored_file = await self.store.async_load()
-            if not self.stored_file:
-                self.stored_file = {}
+            if stored_file := await self.store.async_load():
+                self.pdf = PDF(**stored_file, loaded_from_store=True)
         await self.update()
 
     async def _process_pdf(
         self,
-        stream: IO[Any],
         alt_timestamp: tuple[datetime.datetime, ModifiedDateSource] | None = None,
-        upload: bool = False,
     ) -> bool:
-        """(Re)load a pdf from a url."""
-        # return true is updated.
-        try:
-            pdfr: PdfReader = PdfReader(stream)
-            metadata: DocumentInformation | None = pdfr.metadata
-            if metadata:
-                self.modified = metadata.modification_date
-                self.modified_source = ModifiedDateSource.PDF_METADATA
-                if upload:
-                    self.metadata_name = metadata.title
-                if self.modified is not None:
-                    self.modified = self.modified.replace(tzinfo=datetime.UTC)
-            if self.modified is None and alt_timestamp is not None:
-                self.modified, self.modified_source = alt_timestamp
-            hash_md5 = md5()
-            for chunk in iter(lambda: stream.read(4096), b""):
-                hash_md5.update(chunk)
-            self.md5_checksum = hash_md5.hexdigest()
-            # Check if there are changes, otherwise we should stop to save comp time
-            if (
-                self.stored_file
-                and self.modified
-                == datetime.datetime.fromisoformat(self.stored_file.get("modified"))
-                and self.md5_checksum == self.stored_file.get("md5_checksum")
-            ):
-                pdfr.close()
-                if isinstance(stream, BytesIO):
-                    stream.close()
-                return False
-            self.pages = [page.extract_text() for page in pdfr.pages]
-            pdfr.close()
-            if isinstance(stream, BytesIO):
-                stream.close()
-        except PyPdfError as err:
-            raise PDFParseError from err
-        if self.store is not None:
-            if self.stored_file is None:
-                self.stored_file = {}
-            self.stored_file["modified"] = self.modified.isoformat()
-            self.stored_file["md5_checksum"] = self.md5_checksum
-            self.stored_file["modified_source"] = self.modified_source
-            self.stored_file["pages"] = self.pages
-            await self.store.async_save(self.stored_file)
-        return True
+        """(Re)load a pdf from a url.
 
-    async def _load_from_storage(self) -> None:
+        returns true if the pdf was updated (either modified date or checksum), false if not.
+        """
+        _LOGGER.debug("Start processing PDF")
+        tasks: list[float] = [0.05, 0.05, 0.65, 0.25]
+        self._progress.define_tasks(tasks)
+        self._document = await self.hass.async_add_executor_job(
+            partial(Document, stream=self._stream)
+        )
+        self._progress.advance_steps()
+        modified: datetime.datetime | None = None
+        title: str | None = None
+        if self._document.metadata:
+            if "title" in self._document.metadata:
+                title = self._document.metadata["title"]
+            if "modDate" in self._document.metadata:
+                matches: re.Match[str] | None = re.search(
+                    r"(\d{14}-\d{2})(?:')(\d{2})(?:')",
+                    self._document.metadata["modDate"],
+                )
+                if matches:
+                    modified = datetime.datetime.strptime(
+                        f"{matches.group(1)}{matches.group(2)}", "%Y%m%d%H%M%S%z"
+                    )
+                    self.pdf.modified_source = ModifiedDateSource.PDF_METADATA
+                    modified.replace(tzinfo=datetime.UTC)
+        if modified is None and alt_timestamp is not None:
+            modified, self.pdf.modified_source = alt_timestamp
+        self._stream.seek(0)  # reset pointer
+        digest_sha256 = await self.hass.async_add_executor_job(
+            file_digest, self._stream, "sha256"
+        )
+        sha256_checksum: str = digest_sha256.hexdigest()
+        self._progress.advance_steps()
+        # Check if there are changes, otherwise we should stop to save comp time
+        if (
+            self.pdf.loaded_from_store
+            and modified == self.pdf.modified
+            and sha256_checksum == self.pdf.sha256_checksum
+        ):
+            await self.close()
+            self._progress.advance_steps(2)
+            _LOGGER.debug("PDF not modified since last load, skipping processing")
+            return False
+        self.pdf.modified = modified
+        self.pdf.sha256_checksum = sha256_checksum
+        self.pdf.title = title
+        self.pdf.page_count = self._document.page_count
         if self.store is not None:
-            self.stored_file = await self.store.async_load()
-            if self.stored_file is not None:
-                self.pages = cast(list[str], self.stored_file.get("pages"))
-                self.modified = datetime.datetime.fromisoformat(
-                    self.stored_file.get("modified")
+            if len(self.pdf.pages) > 0:
+                # already loaded pages, do we need to re-ocr them?
+                await self._get_pages(set(self.pdf.pdf.pages.keys()), update=True)
+            await self.store.async_save(self.pdf.model_dump())
+            # Generate a thumbnail
+            pixmap: Pixmap = await self.hass.async_add_executor_job(
+                self._document[0].get_pixmap
+            )
+            # Resize to 512x512 maintining aspect ratio
+            pil_image: Image.Image = pixmap.pil_image()
+            await self.hass.async_add_executor_job(
+                pil_image.thumbnail, (512, 512), Image.Resampling.BICUBIC
+            )
+            pdf_storage_path: Path = Path(
+                self.hass.config.path(
+                    STORAGE_DIR,
+                    DOMAIN,
                 )
-                self.modified_source = cast(
-                    ModifiedDateSource, self.stored_file.get("modified_source")
-                )
-                self.md5_checksum = cast(str, self.stored_file["md5_checksum"])
-                return
-        raise StoredFileError
+            )
+            if not pdf_storage_path.exists():
+                await self.hass.async_add_executor_job(pdf_storage_path.mkdir)
+            await self.hass.async_add_executor_job(
+                pil_image.save,
+                f"{pdf_storage_path}/{self.config_entry_id}.webp",
+                "WEBP",
+            )
+            self._progress.advance_steps()
+            # save the actual pdf file (if neeeded)
+            if isinstance(self, (PDFScrapeHTTP, PDFScrapeUpload)):
+                self._stream.seek(0)
+                path: Path = Path(f"{pdf_storage_path}/{self.config_entry_id}.pdf")
+                with await self.hass.async_add_executor_job(
+                    partial(
+                        path.open,
+                        mode="wb",
+                    )
+                ) as f:
+                    memview = self._stream.getbuffer()
+                    await self.hass.async_add_executor_job(f.write, memview)
+                    memview.release()
+        await self.close()
+        _LOGGER.debug("PDF Finished Processing")
+        return True
 
     @abstractmethod
     async def update(self) -> bool:
         """Must be implemented by sub_classes."""
 
-    def close(self) -> None:
-        """Close to free up memory occupied by the pdf txt."""
-        self.pages = []
+    async def close(self) -> None:
+        """Close to free up memory occupied by the pdf and file lock."""
+        if hasattr(self, "_document") and not self._document.is_closed:
+            await self.hass.async_add_executor_job(self._document.close)
+        if hasattr(self, "_stream") and not self._stream.closed:
+            self._stream.close()
 
-    def get_pages(self, page_range: str) -> str:
+    async def _get_pages(
+        self,
+        page_nums: set[int],
+        ocr: bool = False,
+        update: bool = False,
+    ) -> int:
+        """Get txt on a pages."""
+        progress_value: float = 1 / len(page_nums)
+        self._progress.define_tasks(tasks=[progress_value] * len(page_nums))
+        tasks: dict[int, Task] = {}
+        async with TaskGroup() as tg:
+            for page in page_nums:
+                page_index = page - 1
+                if page_index not in self.pdf.pages or (
+                    ocr and not self.pdf.pages[page_index].ocr
+                ):
+                    tasks[page_index] = tg.create_task(
+                        self._get_page_text(page_index, ocr)
+                    )
+                elif update:
+                    tasks[page_index] = tg.create_task(
+                        self._get_page_text(page_index, self.pdf.pages[page_index].ocr)
+                    )
+        for page_index, task in tasks.items():
+            if task.exception():
+                _LOGGER.exception(
+                    "Error processing page %s",
+                    page_index + 1,
+                    exc_info=task.exception(),
+                )
+            self.pdf.pages[page_index] = PDFPage(
+                ocr=ocr or (update and self.pdf.pages[page_index].ocr),
+                text=task.result(),
+            )
+
+    async def _load_stream_from_file(self, file: Path) -> None:
+        """Load the file into a stream."""
+        with await self.hass.async_add_executor_job(partial(file.open, mode="rb")) as f:
+            self._stream = BytesIO(await self.hass.async_add_executor_job(f.read))
+
+    async def _load_document_from_file_or_cache(self) -> None:
+        """Load the document from file or cache."""
+        if (
+            hasattr(self, "_document")
+            and self._document is not None
+            and not self._document.is_closed
+        ):
+            return
+        if hasattr(self, "file"):
+            await self._load_stream_from_file(self.file)
+        else:
+            await self._load_stream_from_file(
+                Path(
+                    self.hass.config.path(
+                        STORAGE_DIR, DOMAIN, f"{self.config_entry_id}.pdf"
+                    )
+                )
+            )
+        self._document = await self.hass.async_add_executor_job(
+            partial(Document, stream=self._stream)
+        )
+
+    async def _get_page_text(self, page_index: int, ocr: bool = False) -> str:
+        """Get text from a specific page."""
+        await self._load_document_from_file_or_cache()
+        text_page: TextPage = await self.hass.async_add_executor_job(
+            self._document[page_index].get_textpage
+            if not ocr
+            else self._document[page_index].get_textpage_ocr
+        )
+        return await self.hass.async_add_executor_job(text_page.extractText)
+
+    async def get_pages(self, page_range: str, ocr: bool = False) -> str:
         """Parse page range string into list of page numbers."""
-
         page_nums: set[int] = set()
         for part in page_range.split(","):
             if "-" in part:
@@ -160,19 +353,23 @@ class PDFScrape(ABC):
                 page_nums.update(range(start, end + 1))
             else:
                 page_nums.add(int(part))
-        if max(page_nums) > len(self.pages) or min(page_nums) < 1:
+        if max(page_nums) > self.pdf.page_count or min(page_nums) < 1:
             raise IndexError("Page number out of range")
-        return "\n".join(self.pages[page - 1] for page in sorted(page_nums))
+        await self._get_pages(page_nums, ocr)
+        return "\n".join(
+            self.pdf.pages[page - 1].text or "" for page in sorted(page_nums)
+        )
 
 
 class PDFScrapeHTTP(PDFScrape):
     """Parse pdf from http/https source."""
 
-    def __init__(self, hass: HomeAssistant, config_entry_id: str | None) -> None:
-        """Call only from classmethod."""
+    def __init__(
+        self, hass: HomeAssistant, url: str, config_entry_id: str | None = None
+    ) -> None:
+        """Call from class method unless need to monitor progress on first load."""
         super().__init__(hass, config_entry_id)
-        self.url: str
-        self.session: ClientSession
+        self.url: str = url
 
     @classmethod
     async def pdfscrape(
@@ -183,9 +380,7 @@ class PDFScrapeHTTP(PDFScrape):
         config_entry_id: str | None = None,
     ):
         """Instantiate a pdfscrape class."""
-        self = cls(hass, config_entry_id)
-        self.url = url
-        self.session = async_get_clientsession(self.hass)
+        self = cls(hass, url, config_entry_id)
         await self._pdf_scrape()
         return self
 
@@ -196,128 +391,171 @@ class PDFScrapeHTTP(PDFScrape):
     async def update(self) -> bool:
         """(Re)load a pdf from a URL."""
         try:
-            resp: ClientResponse = await self.session.get(self.url)
-            stream: BytesIO = BytesIO(await resp.read())
-            alt_modified: datetime
-            alt_modified_source: ModifiedDateSource
-            if resp.headers.get("late-modified"):
-                alt_modified = datetime.strptime(
-                    resp.headers["last-modified"], "%a, %d %b %Y %H:%M:%S %Z"
-                )
-                alt_modified_source = ModifiedDateSource.HTTP_HEADER
-            else:
-                alt_modified = datetime.datetime.now(datetime.UTC)
-                alt_modified_source = ModifiedDateSource.FIRST_CHECK
-            if await self._process_pdf(
-                stream,
-                (alt_modified, alt_modified_source),
-            ):
-                return True
-            await self._load_from_storage()
+            if self.pdf.http_headers is not None:
+                async with get_async_client(self.hass) as client:
+                    r: Response = await client.head(self.url)
+                    if "last-modified" in r.headers and "content-length" in r.headers:
+                        new_headers = HTTPHeaders(
+                            last_modified=convert_header_date(
+                                r.headers["last-modified"]
+                            ),
+                            content_length=int(r.headers["content-length"]),
+                        )
 
-        except (ClientResponseError, ClientConnectorError) as err:
+                        if new_headers == self.pdf.http_headers:
+                            _LOGGER.debug(
+                                "HTTP headers indicate PDF has not changed, skipping download"
+                            )
+                            return False
+            self._progress.clear_tasks()
+            self._progress.define_tasks([0.2, 0.8])
+            async with (
+                get_async_client(self.hass) as client,
+                client.stream("GET", self.url) as r,
+            ):
+                r.raise_for_status()
+                self._stream = BytesIO()
+                async for chunk in r.aiter_bytes():
+                    self._stream.write(chunk)
+                self.pdf.http_headers = HTTPHeaders(
+                    last_modified=convert_header_date(r.headers["last-modified"]),
+                    content_length=int(r.headers.get("content-length")),
+                )
+                alt_modified: datetime
+                alt_modified_source: ModifiedDateSource
+                if self.pdf.http_headers.last_modified is not None:
+                    alt_modified = self.pdf.http_headers.last_modified
+                    alt_modified_source = ModifiedDateSource.HTTP_HEADER
+                else:
+                    alt_modified = datetime.datetime.now(datetime.UTC)
+                    alt_modified_source = ModifiedDateSource.FIRST_CHECK
+            self._progress.advance_steps()
+            return await self._process_pdf((alt_modified, alt_modified_source))
+        except (RequestError, HTTPStatusError) as err:
             raise HTTPError(str(err)) from err
 
-        return False
+
+def convert_header_date(date_str: str) -> datetime.datetime:
+    """Convert HTTP header date to datetime."""
+    return datetime.datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S %Z").replace(
+        tzinfo=datetime.UTC
+    )
 
 
 class PDFScrapeFile(PDFScrape):
     """Parse pdf from file."""
 
     def __init__(
-        self, hass: HomeAssistant, config_entry_id: str | None, path: Path | str | None
+        self,
+        hass: HomeAssistant,
+        config_entry_id: str | None,
+        file: Path | str,
     ) -> None:
         """Call only from classmethod."""
         super().__init__(hass, config_entry_id)
-        self.path: Path | None = (
-            path if isinstance(path, Path) or path is None else Path(path)
-        )
+        self.file: Path = file if isinstance(file, Path) else Path(file)
 
     @classmethod
     async def pdfscrape(
         cls,
         hass: HomeAssistant,
-        path: Path | str | None,
+        file: Path | str,
         *,
         config_entry_id: str | None = None,
     ):
         """Initialize a PDFScrapeFile class."""
-        self = cls(hass, config_entry_id, path)
+        self = cls(hass, config_entry_id, file)
         await self._pdf_scrape()
         return self
 
-    async def _update(self, upload: bool = False) -> bool:
+    async def update(self) -> bool:
         """Check for an update."""
-        if self.path is not None:
+        if self.file is not None:
             try:
-                stream: BufferedReader = await self.hass.async_add_executor_job(
-                    partial(self.path.open, mode="rb")
+                modified: datetime = datetime.datetime.fromtimestamp(
+                    (await self.hass.async_add_job_executor(self.file.stat)).st_mtime,
+                    datetime.UTC,
                 )
-                modified: datetime = (
-                    datetime.datetime.now(datetime.UTC)
-                    if upload
-                    else datetime.datetime.fromtimestamp(
-                        self.path.stat().st_mtime, datetime.UTC
+                with await self.hass.async_add_executor_job(
+                    partial(self.file.open, mode="rb")
+                ) as f:
+                    self._stream = BytesIO(
+                        await self.hass.async_add_executor_job(f.read)
                     )
-                )
                 if await self._process_pdf(
-                    stream,
                     (
                         modified,
-                        ModifiedDateSource.UPLOAD
-                        if upload
-                        else ModifiedDateSource.FILE_MTIME,
-                    ),
-                    upload=upload,
+                        ModifiedDateSource.FILE_MTIME,
+                    )
                 ):
                     return True
             except OSError as err:
                 raise FileError(str(err)) from err
-        # We have an upload without an update, pull from file.
-        await self._load_from_storage()
         return False
 
+    def __repr__(self):
+        """Representation."""
+        return f"PDF({self.file})" if self.file is not None else "PDF(Local File)"
 
-class PDFScrapeUpload(PDFScrapeFile):
+
+class PDFScrapeUpload(PDFScrape):
     """Upload PDF Scape."""
+
+    def __init__(
+        self, hass: HomeAssistant, config_entry_id: str, file: Path | str | None = None
+    ) -> None:
+        """Initialize for cached files only."""
+        super().__init__(hass, config_entry_id)
+        if isinstance(file, str):
+            file = Path(file)
+        with file.open(mode="rb") as pdf_file:
+            self._stream = BytesIO()
+            self._stream.write(pdf_file.read)
+
+    @classmethod
+    async def async_from_file(
+        cls,
+        hass: HomeAssistant,
+        file: Path | str,
+        config_entry_id: str,
+    ):
+        """Initialize a PDFScrapeUpload class but do not process."""
+        self = cls(hass, config_entry_id)
+        if isinstance(file, str):
+            file = Path(file)
+        with await self.hass.async_add_executor_job(
+            partial(file.open, mode="rb")
+        ) as pdf_file:
+            self._stream = BytesIO()
+            self._stream.write(await self.hass.async_add_executor_job(pdf_file.read))
+        return self
 
     @classmethod
     async def pdfscrape(
-        cls,
-        hass: HomeAssistant,
-        *,
-        path: Path | None = None,
-        config_entry_id: str | None = None,
+        cls, hass: HomeAssistant, config_entry_id: str, file: Path | str | None = None
     ):
         """Initialize a PDFScrapeUpload class."""
-        if path is None and config_entry_id is None:
-            raise ValueError("Either path or config_entry_id must be specified")
-        self = cls(hass, config_entry_id, path)
+        if file is None:
+            self = cls(hass, config_entry_id)
+        else:
+            self = await cls.from_file(hass, file, config_entry_id)
         await self._pdf_scrape()
         return self
 
-    def __repr__(self):
-        """Representation."""
-        return "PDF(Uploaded)"
-
     async def update(self) -> bool:
-        """(Re)load a pdf from an upload."""
-        return await self._update(upload=True)
-
-
-class PDFScrapeLocal(PDFScrapeFile):
-    """Upload PDF Scape."""
+        """Check for an update."""
+        if hasattr(self, "_stream"):
+            return await self._process_pdf(
+                (datetime.datetime.now(datetime.UTC), ModifiedDateSource.UPLOAD)
+            )
+        return False
 
     def __repr__(self):
         """Representation."""
-        return f"PDF({self.path})"
-
-    async def update(self) -> bool:
-        """(Re)load a pdf from an upload."""
-        return await self._update()
+        return f"PDF Uploaded - {self.pdf.title}" if self.pdf.title else "PDF Uploaded"
 
 
-class PDFParseError(PyPdfError):
+class PDFParseError(Exception):
     """Unable to parse pdf."""
 
 

@@ -1,13 +1,15 @@
 """PDF Scrape Integration."""
 
+from asyncio import TaskGroup
+from collections.abc import Awaitable, Callable
+from functools import partial
 import logging
+from pathlib import Path
 from typing import Any
 
 import voluptuous as vol
 
 from homeassistant.components.file_upload import process_uploaded_file
-
-# import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     ATTR_CONFIG_ENTRY_ID,
@@ -26,14 +28,15 @@ from homeassistant.exceptions import ConfigEntryError, ServiceValidationError
 import homeassistant.helpers.config_validation as cv
 import homeassistant.helpers.device_registry as dr
 from homeassistant.helpers.selector import FileSelector, FileSelectorConfig
-from homeassistant.helpers.storage import Store
+from homeassistant.helpers.storage import STORAGE_DIR, Store
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     CONF_FILE,
-    CONF_MD5_CHECKSUM,
     CONF_MODIFIED,
     CONF_MODIFIED_SOURCE,
+    CONF_SHA256_CHECKSUM,
+    DOCUMENT_SUBENTRY,
     DOMAIN,
     ConfType,
     ErrorTypes,
@@ -41,19 +44,19 @@ from .const import (
 from .coordinator import (
     PDFScrapeConfigEntry,
     PDFScrapeCoordinator,
+    PDFScrapeFileCoordinator,
     PDFScrapeHTTPCoordinator,
-    PDFScrapeLocalCoordinator,
     PDFScrapeUploadCoordinator,
     async_raise_error,
 )
 from .pdf import (
+    PDF,
     FileError,
     HTTPError,
     PDFParseError,
+    PDFScrapeFile,
     PDFScrapeHTTP,
-    PDFScrapeLocal,
     PDFScrapeUpload,
-    StoredFile,
     get_store,
 )
 
@@ -62,6 +65,13 @@ _PLATFORMS: list[Platform] = [Platform.SENSOR]
 _LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_run_in_loop[*_Ts, _T](
+    hass: HomeAssistant, target: Callable[[*_Ts], _T], *args: *_Ts
+) -> Awaitable[_T]:
+    """Run a function in the executor."""
+    return await hass.async_add_executor_job(target, *args)
 
 
 async def async_setup(hass: HomeAssistant, config_type: ConfigType) -> bool:
@@ -94,11 +104,11 @@ async def async_setup(hass: HomeAssistant, config_type: ConfigType) -> bool:
                     )
                     # Reload the config entry to pick up the new file
                     hass.config_entries.async_schedule_reload(config_entry.entry_id)
-                    if pdf.modified is not None:
+                    if pdf.pdf.modified is not None:
                         return {
-                            CONF_MODIFIED: pdf.modified.isoformat(),
-                            CONF_MODIFIED_SOURCE: pdf.modified_source,
-                            CONF_MD5_CHECKSUM: pdf.md5_checksum,
+                            CONF_MODIFIED: pdf.pdf.modified.isoformat(),
+                            CONF_MODIFIED_SOURCE: pdf.pdf.modified_source,
+                            CONF_SHA256_CHECKSUM: pdf.pdf.md5_checksum,
                         }
                     error = "Unable to parse uploaded PDF"
                 except PDFParseError as ex:
@@ -144,6 +154,41 @@ async def async_setup(hass: HomeAssistant, config_type: ConfigType) -> bool:
         SCHEMA,
         SupportsResponse.OPTIONAL,
     )
+
+    # Clean up orphaned files if present
+    # List of valid entries (and temp_ids)
+    config_entry_ids: list[str] = [
+        entry.entry_id
+        if entry.data.get("temp_storage_id") is None
+        else entry.data.get("temp_storage_id")
+        for entry in hass.config_entries.async_entries(DOMAIN)
+    ]
+    path: Path = Path(hass.config.path(STORAGE_DIR))
+    async with TaskGroup() as tg:
+        for file in await hass.async_add_executor_job(path.iterdir):
+            if file.is_file() and file.name.startswith(f"{DOMAIN}_"):
+                entry_or_flow_id: str = file.name.removeprefix(f"{DOMAIN}_")
+                if entry_or_flow_id not in config_entry_ids and (
+                    store := get_store(hass, entry_or_flow_id)
+                ):
+                    _LOGGER.warning(
+                        "Removing orphaned store: %s.  Note: This is not an error but indicates that the store is not associated with any config entry",
+                        store.path,
+                    )
+                    tg.create_task(store.async_remove())
+        path = path.joinpath(DOMAIN)
+        if await hass.async_add_executor_job(path.exists):
+            for file in await hass.async_add_executor_job(path.iterdir):
+                if (
+                    file.suffix in [".pdf", ".webp"]
+                    and file.stem not in config_entry_ids
+                ):
+                    _LOGGER.warning(
+                        "Removing orphaned file: %s.  Note: This is not an error but indicates that the file is not associated with any config entry",
+                        file,
+                    )
+                    tg.create_task(async_run_in_loop(hass, file.unlink))
+
     return True
 
 
@@ -151,6 +196,8 @@ async def async_setup_entry(
     hass: HomeAssistant, config_entry: PDFScrapeConfigEntry
 ) -> bool:
     """Set up the config entry."""
+    if not config_entry.get_subentries_of_type(DOCUMENT_SUBENTRY.subentry_type):
+        hass.config_entries.async_add_subentry(config_entry, DOCUMENT_SUBENTRY)
     try:
         coordinator: PDFScrapeCoordinator
         match config_entry.data[CONF_TYPE]:
@@ -166,14 +213,39 @@ async def async_setup_entry(
                     # Rename the storage file that was created by the config flow (one time only)
                     if temp_store := get_store(hass, temp_key):
                         if data := await temp_store.async_load():
-                            new_store: Store[StoredFile] = get_store(
+                            new_store: Store[PDF] = get_store(
                                 hass, config_entry.entry_id
                             )
                             await new_store.async_save(data)
                             await temp_store.async_remove()
                             hass.config_entries.async_update_entry(
-                                config_entry, data={"type": "upload"}
+                                config_entry, data={"type": ConfType.UPLOAD}
                             )
+                            # rename the pdf file.
+                            path: Path = Path(hass.config.path(STORAGE_DIR), DOMAIN)
+                            async with TaskGroup() as tg:
+                                tg.create_task(
+                                    async_run_in_loop(
+                                        hass,
+                                        partial(
+                                            path.joinpath(f"{temp_key}.pdf").rename,
+                                            path.joinpath(
+                                                f"{config_entry.entry_id}.pdf"
+                                            ),
+                                        ),
+                                    )
+                                )
+                                tg.create_task(
+                                    async_run_in_loop(
+                                        hass,
+                                        partial(
+                                            path.joinpath(f"{temp_key}.webp").rename,
+                                            path.joinpath(
+                                                f"{config_entry.entry_id}.webp"
+                                            ),
+                                        ),
+                                    )
+                                )
                         else:
                             raise ConfigEntryError("Temp store empty")
                     else:
@@ -184,12 +256,12 @@ async def async_setup_entry(
                 )
                 coordinator = PDFScrapeUploadCoordinator(hass, config_entry, pdfupload)
             case ConfType.LOCAL:
-                pdflocal: PDFScrapeLocal = await PDFScrapeLocal.pdfscrape(
+                pdflocal: PDFScrapeFile = await PDFScrapeFile.pdfscrape(
                     hass,
                     config_entry.data[CONF_FILE],
                     config_entry_id=config_entry.entry_id,
                 )
-                coordinator = PDFScrapeLocalCoordinator(hass, config_entry, pdflocal)
+                coordinator = PDFScrapeFileCoordinator(hass, config_entry, pdflocal)
 
         await coordinator.async_config_entry_first_refresh()
 
@@ -205,30 +277,21 @@ async def async_setup_entry(
             exception=ex,
         )
 
+    config_entry.async_on_unload(config_entry.add_update_listener(update_listener))
+
     return True
 
 
-async def async_migrate_entry(
-    hass: HomeAssistant, config_entry: PDFScrapeConfigEntry
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, config_entry: ConfigEntry, device_entry: dr.DeviceEntry
 ) -> bool:
-    """Check for config migration."""
+    """Handle pre-device delete checks."""
+    # TODO: Tesseract device:  Also delete config_entry
 
-    if config_entry.version == 1 and config_entry.minor_version == 1:
-        new_data: dict[str, Any] = {**config_entry.data}
-        # Move data to store and remove from config_entry data
-        data: StoredFile = {}
-        for k, v in new_data.items():
-            if k in [CONF_MODIFIED, CONF_MODIFIED_SOURCE, CONF_MD5_CHECKSUM]:
-                data[k] = v
-                del new_data[k]
-        store: Store[StoredFile] = get_store(hass, config_entry.entry_id)
-        await store.async_save(data)
 
-        hass.config_entries.async_update_entry(
-            config_entry, data=new_data, version=1, minor_version=2
-        )
-
-    return True
+async def update_listener(hass: HomeAssistant, config_entry: ConfigEntry):
+    """Process update (when subentries are added)."""
+    hass.config_entries.async_schedule_reload(config_entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -239,5 +302,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle removal of an entry."""
     # Delete the store
-    if store := get_store(hass, entry.entry_id):
-        await store.async_remove()
+    await async_cleanup(hass, entry.entry_id)
+
+
+async def async_cleanup(hass: HomeAssistant, entry_or_flow_id: str) -> None:
+    """Handle cleanup after removed entry and config flow error."""
+    # Remove storage files
+    path: Path = Path(hass.config.path(".storage", DOMAIN))
+    async with TaskGroup() as tg:
+        for file in async_run_in_loop(hass, path.glob(f"{entry_or_flow_id}.*")):
+            tg.create_task(async_run_in_loop(hass, file.unlink))
+        if store := get_store(hass, entry_or_flow_id):
+            tg.create_task(store.async_remove())

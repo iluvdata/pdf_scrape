@@ -1,9 +1,9 @@
 """Config flow for PDF Scrape Integration."""
 
+from asyncio import Task
 from collections.abc import Callable, Mapping
 from datetime import timedelta
 import logging
-from logging import Logger
 from pathlib import Path
 import re
 from typing import Any, cast
@@ -12,9 +12,11 @@ import voluptuous as vol
 
 from homeassistant.components import websocket_api
 from homeassistant.components.file_upload import process_uploaded_file
+from homeassistant.components.select import DOMAIN as SELECT_DOMAIN, SelectEntity
 from homeassistant.components.sensor import (
     CONF_STATE_CLASS,
     DEVICE_CLASS_UNITS,
+    DOMAIN as SENSOR_DOMAIN,
     SensorDeviceClass,
     SensorEntity,
     SensorStateClass,
@@ -28,6 +30,8 @@ from homeassistant.config_entries import (
     ConfigFlow,
     ConfigFlowResult,
     ConfigSubentryFlow,
+    FlowType,
+    SubentryFlowContext,
     SubentryFlowResult,
 )
 from homeassistant.const import (
@@ -47,9 +51,11 @@ from homeassistant.helpers.config_validation import (
     path as pathcheck,
     url,
 )
-from homeassistant.helpers.entity import CalculatedState
+from homeassistant.helpers.entity import CalculatedState, Entity
 import homeassistant.helpers.issue_registry as ir
 from homeassistant.helpers.selector import (
+    BooleanSelector,
+    BooleanSelectorConfig,
     DurationSelector,
     DurationSelectorConfig,
     FileSelector,
@@ -65,15 +71,17 @@ from homeassistant.helpers.selector import (
 )
 from homeassistant.helpers.template import Template, TemplateError, TemplateVarsType
 
-from . import PDFScrapeConfigEntry
+from . import PDFScrapeConfigEntry, async_cleanup
 from .const import (
     CONF_DEFAULT_SCAN_INTERVAL,
     CONF_FILE,
     CONF_MIN_SCAN_INTERVAL,
+    CONF_OCR,
     CONF_PDF_PAGES,
     CONF_REGEX_MATCH_INDEX,
     CONF_REGEX_SEARCH,
     CONF_VALUE_TEMPLATE,
+    DOCUMENT_SUBENTRY,
     DOMAIN,
     REGEX_PAGE_RANGE_PATTERN,
     URL_FILE_INTEGRATION,
@@ -85,12 +93,12 @@ from .pdf import (
     HTTPError,
     PDFParseError,
     PDFScrape,
+    PDFScrapeFile,
     PDFScrapeHTTP,
-    PDFScrapeLocal,
     PDFScrapeUpload,
 )
 
-_LOGGER: Logger = logging.getLogger(__name__)
+_LOGGER: logging.Logger = logging.getLogger(__name__)
 
 
 class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -98,6 +106,14 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION: int = 1
     MINOR_VERSION: int = 2
+
+    data: dict[str, str | timedelta | None] = {}
+    placeholders: dict[str, str] | None = None
+    reason: str = "already_configured"
+    pdf: PDFScrape
+    title_fun: Callable[[], str] | None = None
+    unique_fun: Callable[[], str]
+    process_task: Task | None = None
 
     @classmethod
     @callback
@@ -115,12 +131,89 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="user", menu_options=list(ConfType), sort=True
         )
 
-    def _async_clear_issue(self) -> None:
+    async def async_step_finish(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult | None:
+        """Finish this flow."""
+        await self.async_set_unique_id(self.unique_fun())
+        if entry := self.hass.config_entries.async_entry_for_domain_unique_id(
+            DOMAIN, self.unique_id
+        ):
+            if self.source == SOURCE_USER or (
+                self.source == SOURCE_RECONFIGURE
+                and entry.entry_id != self._get_reconfigure_entry().entry_id
+            ):
+                return self.async_abort(
+                    reason=self.reason,
+                    description_placeholders=self.placeholders,
+                )
+        title: str = self.data[CONF_NAME] if not self.title_fun else self.title_fun()
+        if self.source == SOURCE_USER:
+            return self.async_create_entry(
+                title=title,
+                data=self.data,
+                subentries=[DOCUMENT_SUBENTRY.as_dict()],
+            )
         ir.async_delete_issue(
             self.hass,
             DOMAIN,
             f"{ErrorTypes.PDF_ERROR}_{self._get_reconfigure_entry().entry_id}",
         )
+        return self.async_update_and_abort(
+            self._get_reconfigure_entry(),
+            title=title,
+            data=self.data,
+        )
+
+    async def async_on_create_entry(self, result: ConfigFlowResult) -> ConfigFlowResult:
+        """Next flow for create flow."""
+        subentry_flow: SubentryFlowResult = (
+            await self.hass.config_entries.subentries.async_init(
+                (result["result"].entry_id, "target"),
+                context=SubentryFlowContext(source=SOURCE_USER),
+            )
+        )
+        result["next_flow"] = (
+            FlowType.CONFIG_SUBENTRIES_FLOW,
+            subentry_flow["flow_id"],
+        )
+        return result
+
+    async def async_step_process_error(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Handle errors during processing."""
+        await async_cleanup(self.hass, self.flow_id)
+        return self.async_abort(
+            reason=self.reason,
+            description_placeholders=self.placeholders,
+        )
+
+    def _async_progress(self) -> ConfigFlowResult | str | None:
+        if self.process_task is not None:
+            if not self.process_task.done():
+                self.async_update_progress(self.pdf.progress)
+                return self.async_show_progress(
+                    step_id=self.cur_step["step_id"],
+                    progress_action="pdf_process",
+                    progress_task=self.process_task,
+                )
+            if exception := self.process_task.exception():
+                _LOGGER.debug("Progress task exception", exc_info=exception)
+                self.placeholders["msg"] = str(exception)
+                if isinstance(exception, PDFParseError):
+                    self.reason = "pdf_parse"
+                elif isinstance(exception, HTTPError):
+                    self.reason = "http_error"
+                elif isinstance(exception, FileError):
+                    self.reason = "file_error"
+                else:
+                    self.reason = "exception"
+                return self.async_show_progress_done(next_step_id="process_error")
+            self.process_task = None
+            return self.async_show_progress_done(next_step_id="finish")
+        return None
 
     async def async_step_http(
         self, user_input: dict[str, Any] | None = None
@@ -138,47 +231,27 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
             else:
                 try:
                     url(user_input[CONF_URL])
-                    pdf: PDFScrapeHTTP = await PDFScrapeHTTP.pdfscrape(
-                        self.hass, user_input[CONF_URL]
+                    self.data[CONF_URL] = user_input[CONF_URL]
+                    self.data[CONF_SCAN_INTERVAL] = {"seconds": td.total_seconds()}
+                    self.data[CONF_TYPE] = ConfType.HTTP
+                    self.placeholders = {"url": user_input[CONF_URL]}
+                    self.reason = "http_already_configured"
+                    self.pdf = PDFScrapeHTTP(self.hass, user_input[CONF_URL])
+                    self.title_fun = lambda: (
+                        user_input.get(CONF_NAME)
+                        or self.pdf.pdf.title
+                        or user_input[CONF_URL]
                     )
-                    pdf.close()
-                    # Store the token in the config entry data
-                    title: str = user_input.get(CONF_NAME, user_input[CONF_URL])
-                    data: dict[str, Any] = {
-                        CONF_URL: user_input[CONF_URL],
-                        CONF_SCAN_INTERVAL: {"seconds": td.total_seconds()},
-                        CONF_TYPE: ConfType.HTTP,
-                    }
-                    if user_input.get(CONF_NAME):
-                        data[CONF_NAME] = user_input[CONF_NAME]
-                    if self.source == SOURCE_USER:
-                        await self.async_set_unique_id(
-                            f"{DOMAIN}_{user_input[CONF_URL]}"
+                    self.unique_fun = lambda: self.data[CONF_URL]
+                    if self.process_task is None:
+                        self.process_task = self.hass.async_create_task(
+                            self.pdf.update(), "pdfscrape_process"
                         )
-                        self._abort_if_unique_id_configured()
-                        return self.async_create_entry(
-                            title=title,
-                            data=data,
-                        )
-                    if self.source == SOURCE_RECONFIGURE:
-                        await self.async_set_unique_id(
-                            f"{DOMAIN}_{user_input[CONF_URL]}"
-                        )
-                        self._async_clear_issue()
-                        return self.async_update_reload_and_abort(
-                            self._get_reconfigure_entry(),
-                            title=title,
-                            data=data,
-                        )
-                    _LOGGER.error("Accessed from invalid source: %s", self.source)
-                    errors["base"] = "invalid_source"
                 except vol.Invalid:
                     errors[CONF_URL] = "invalid_url"
-                except PDFParseError:
-                    errors[CONF_URL] = "pdf_parse"
-                except FileError as err:
-                    _LOGGER.warning("File/OS Error %s", err)
-                    errors[CONF_FILE] = "file_error"
+        if not errors and (result := self._async_progress()):
+            return result
+
         flow_schema: vol.Schema = vol.Schema(
             {
                 vol.Optional(CONF_NAME): TextSelector(),
@@ -202,7 +275,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
             flow_schema = self.add_suggested_values_to_schema(
                 flow_schema,
                 {
-                    **self._get_reconfigure_entry().data,
+                    **data,
                     CONF_NAME: self._get_reconfigure_entry().title,
                 },
             )
@@ -234,47 +307,41 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle config flow."""
         errors: dict[str, str] = {}
         if user_input:
-            try:
-                with await self.hass.async_add_executor_job(
-                    process_uploaded_file, self.hass, user_input[CONF_FILE]
+
+            def _process_pdf() -> PDFScrapeUpload:
+                with process_uploaded_file(
+                    self.hass, user_input[CONF_FILE]
                 ) as pdf_path:
                     # Assign a flow_id for now as the file is deleted when we are done.
-                    pdf: PDFScrapeUpload = await PDFScrapeUpload.pdfscrape(
-                        self.hass, path=pdf_path, config_entry_id=self.flow_id
+                    pdf: PDFScrapeUpload = PDFScrapeUpload(
+                        self.hass,
+                        (
+                            self.flow_id
+                            if self.source == SOURCE_USER
+                            else self._get_reconfigure_entry().entry_id
+                        ),
+                        pdf_path,
                     )
-                    title: str = (
-                        user_input.get(CONF_NAME) or pdf.metadata_name or "Uploaded PDF"
-                    )
-                    data: dict[str, Any] = {
-                        "temp_storage_id": self.flow_id,
-                        CONF_TYPE: ConfType.UPLOAD,
-                    }
-                    if self.source == SOURCE_USER:
-                        await self.async_set_unique_id(
-                            f"{DOMAIN}_{user_input[CONF_FILE]}"
-                        )
-                        self._abort_if_unique_id_configured()
-                        return self.async_create_entry(
-                            title=title,
-                            data=data,
-                        )
-                    if self.source == SOURCE_RECONFIGURE:
-                        await self.async_set_unique_id(
-                            f"{DOMAIN}_{user_input[CONF_FILE]}"
-                        )
-                        # self._abort_if_unique_id_mismatch()
-                        return self.async_update_reload_and_abort(
-                            self._get_reconfigure_entry(),
-                            title=title,
-                            data=data,
-                        )
-                _LOGGER.error("Accessed from invalid source: %s", self.source)
-                errors["base"] = "invalid_source"
-            except PDFParseError:
-                errors[CONF_FILE] = "pdf_parse"
-            except HTTPError as err:
-                _LOGGER.warning("HTTP Error %s", err)
-                errors[CONF_FILE] = "http_error"
+                return pdf
+
+            self.pdf: PDFScrapeUpload = await self.hass.async_add_executor_job(
+                _process_pdf
+            )
+            self.title_fun = lambda: (
+                self.data.get(CONF_NAME) or self.pdf.pdf.title or "Uploaded PDF"
+            )
+            self.unique_fun = lambda: self.pdf.pdf.sha256_checksum
+            self.reason = "upload_already_configured"
+            self.data["temp_storage_id"] = self.flow_id
+            self.data[CONF_TYPE] = ConfType.UPLOAD
+            if self.process_task is None:
+                self.process_task = self.hass.async_create_task(
+                    self.pdf.update(), "pdfscrape_process"
+                )
+
+        if result := self._async_progress():
+            return result
+
         flow_schema: vol.Schema = vol.Schema(
             {
                 vol.Optional(CONF_NAME): TextSelector(),
@@ -300,45 +367,22 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle config flow."""
-        errors: dict[str, str] = {}
-        error_placeholders: dict[str, str] = {}
         if user_input:
-            try:
-                await PDFScrapeLocal.pdfscrape(
-                    self.hass, path=Path(isfile(pathcheck(user_input[CONF_FILE])))
+            self.pdf = PDFScrapeFile(
+                self.hass, path=Path(isfile(pathcheck(user_input[CONF_FILE])))
+            )
+            self.data[CONF_TYPE] = ConfType.LOCAL
+            self.data[CONF_FILE] = user_input[CONF_FILE]
+            self.title_fun = lambda: (
+                user_input.get(CONF_NAME) or user_input[CONF_FILE] or "Local PDF"
+            )
+            self.unique_fun = lambda: self.data[CONF_FILE]
+            if self.process_task is None:
+                self.process_task = self.hass.async_create_task(
+                    self.pdf.update(), "process_pdf"
                 )
-                data: dict[str, Any] = {
-                    CONF_TYPE: ConfType.LOCAL,
-                    CONF_FILE: user_input[CONF_FILE],
-                }
-                title: str = (
-                    user_input.get(CONF_NAME) or user_input[CONF_FILE] or "Local PDF"
-                )
-                if self.source == SOURCE_USER:
-                    await self.async_set_unique_id(f"{DOMAIN}_{user_input[CONF_FILE]}")
-                    self._abort_if_unique_id_configured()
-                    return self.async_create_entry(
-                        title=title,
-                        data=data,
-                    )
-                if self.source == SOURCE_RECONFIGURE:
-                    await self.async_set_unique_id(f"{DOMAIN}_{user_input[CONF_FILE]}")
-                    # self._abort_if_unique_id_mismatch()
-                    self._async_clear_issue()
-                    return self.async_update_reload_and_abort(
-                        self._get_reconfigure_entry(),
-                        title=title,
-                        data=data,
-                    )
-                _LOGGER.error("Accessed from invalid source: %s", self.source)
-                errors["base"] = "invalid_source"
-            except PDFParseError:
-                errors[CONF_FILE] = "pdf_parse"
-            except (FileError, vol.Invalid) as err:
-                _LOGGER.warning("File Error %s", err)
-                if isinstance(err, vol.Invalid):
-                    error_placeholders[CONF_FILE] = err.msg
-                errors[CONF_FILE] = "file_error"
+        if result := await self._async_progress():
+            return result
         flow_schema: vol.Schema = vol.Schema(
             {
                 vol.Optional(CONF_NAME): TextSelector(),
@@ -358,10 +402,8 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="local",
             data_schema=flow_schema,
-            errors=errors,
             description_placeholders={
                 "url_file_integration": URL_FILE_INTEGRATION,
-                **error_placeholders,
             },
         )
 
@@ -383,6 +425,12 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
     data: dict[str, Any] = {}
 
     pdf: PDFScrape
+    preview_task: Task[str] | None = None
+    _progress_task: Task[str] | None = None
+
+    def get_config_entry(self) -> PDFScrapeConfigEntry:
+        """Return the config entry this subentry flow belongs to."""
+        return cast(PDFScrapeConfigEntry, self._get_entry())
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
@@ -409,7 +457,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                         config_entry_id=config_entry.entry_id,
                     )
                 case ConfType.LOCAL:
-                    self.pdf = await PDFScrapeLocal.pdfscrape(
+                    self.pdf = await PDFScrapeFile.pdfscrape(
                         self.hass,
                         config_entry.data[CONF_FILE],
                         config_entry_id=config_entry.entry_id,
@@ -422,30 +470,59 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
         if user_input:
             if not re.match(REGEX_PAGE_RANGE_PATTERN, user_input[CONF_PDF_PAGES]):
                 errors[CONF_PDF_PAGES] = "invalid_page_range"
-            try:
-                self.pdf.get_pages(user_input[CONF_PDF_PAGES])
-            except IndexError:
-                errors[CONF_PDF_PAGES] = "pages_out_of_range"
-            if not errors:
-                self.data[CONF_PDF_PAGES] = user_input[CONF_PDF_PAGES]
-                return await self.async_step_regex(None)
+            self.data[CONF_PDF_PAGES] = user_input[CONF_PDF_PAGES]
+            self.data[CONF_OCR] = user_input[CONF_OCR]
+
+            self._progress_task = self.get_config_entry().async_create_task(
+                self.hass,
+                self.pdf.get_pages(
+                    user_input[CONF_PDF_PAGES], user_input.get(CONF_OCR, False)
+                ),
+                "step_user_get_pages",
+                True,
+            )
+        if self._progress_task is not None:
+            if self._progress_task.done():
+                if self._progress_task.exception():
+                    if isinstance(self._progress_task.exception(), IndexError):
+                        errors[CONF_PDF_PAGES] = "pages_out_of_range"
+                    else:
+                        errors["base"] = self._progress_task.exception()
+                    self._progress_task = None
+                else:
+                    self._progress_task = None
+                    return self.async_show_progress_done(next_step_id="select")
+            else:
+                return self.async_show_progress(
+                    step_id="user",
+                    progress_action="getting_pages",
+                    progress_task=self._progress_task,
+                )
 
         default_pages: str = "1"
+        ocr: bool = False
         if self.source == SOURCE_RECONFIGURE:
             default_pages = str(
                 self._get_reconfigure_subentry().data.get(CONF_PDF_PAGES, 0)
             )
+            ocr = self._get_reconfigure_subentry().data.get(CONF_OCR, False)
         return self.async_show_form(
+            step_id="user",
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_PDF_PAGES, default=default_pages): TextSelector(
                         TextSelectorConfig(type=TextSelectorType.TEXT)
                     ),
+                    vol.Optional(CONF_OCR, default=ocr): BooleanSelector(
+                        BooleanSelectorConfig(
+                            read_only=True  # until we figure out tesseract app.
+                        )
+                    ),
                 }
             ),
             description_placeholders={
                 "title": self._get_entry().title,
-                "pages": len(self.pdf.pages),
+                "pages": self.pdf.pdf.page_count,
             },
             errors=errors,
             last_step=False,
@@ -455,33 +532,32 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
     @staticmethod
     async def async_setup_preview(hass: HomeAssistant) -> None:
         """Set up preview WS API."""
-        # try:
         websocket_api.async_register_command(hass, ws_start_preview)
 
-    async def async_step_regex(
+    async def async_step_select(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Get the regex."""
         errors: dict[str, str] = {}
-        text: str = self.pdf.get_pages(self.data[CONF_PDF_PAGES])
+        text: str = await self.pdf.get_pages(self.data[CONF_PDF_PAGES])
 
-        if user_input and user_input.get(CONF_REGEX_SEARCH):
+        if user_input and CONF_REGEX_SEARCH in user_input:
             # Validate that it's a valid regex
             try:
                 matches: list[str] = re.findall(user_input[CONF_REGEX_SEARCH], text)
                 # Do we get matches?
-                if len(matches):
-                    # Forward to matches
+                if len(matches) > 0:
+                    # Forward to sensor
                     self.data[CONF_REGEX_SEARCH] = user_input.get(CONF_REGEX_SEARCH)
-                    return await self.async_step_matches(None)
-                errors["base"] = "no_matches"
+                    return await self.async_step_sensor(None)
+                errors[CONF_REGEX_SEARCH] = "no_matches"
             except re.PatternError as err:
                 _LOGGER.warning("Invalid Regular Expression: %s", err.msg)
-                errors["base"] = "bad_pattern"
+                errors[CONF_REGEX_SEARCH] = "bad_pattern"
 
-        if user_input and user_input.get("page_text"):
+        if user_input and user_input.get("page_text") and not errors:
             # User wants all the txt.
-            return await self.async_step_matches(None)
+            return await self.async_step_sensor(None)
 
         schema: vol.Schema = vol.Schema(
             {
@@ -498,7 +574,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                 schema, self._get_reconfigure_subentry().data
             )
         return self.async_show_form(
-            step_id="regex",
+            step_id="select",
             data_schema=schema,
             description_placeholders={
                 "title": self._get_entry().title,
@@ -509,13 +585,13 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
             preview="target",
         )
 
-    async def async_step_matches(
+    async def async_step_sensor(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Get the regex."""
         errors: dict[str, str] = {}
 
-        text: str = self.pdf.get_pages(self.data[CONF_PDF_PAGES])
+        text: str = await self.pdf.get_pages(self.data[CONF_PDF_PAGES])
 
         pattern: str | None = self.data.get(CONF_REGEX_SEARCH)
         matches: list[str] = re.findall(pattern, text) if pattern else []
@@ -529,7 +605,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
             else:
                 value = text
             preview: PreviewSensorEntity | None = None
-            errors, preview = _validate_step_matches(
+            errors, preview = _validate_step_sensor(
                 self.hass, config=user_input, value=value
             )
             if preview:
@@ -541,11 +617,20 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                         errors["base"] = errors["base"][:255] + " <truncated>"
             if not errors:
                 if self.source != SOURCE_RECONFIGURE:
-                    config_id: str = str(len(self._get_entry().subentries))
+                    unique_ids: set[int] = {
+                        int(unique_id)
+                        for unique_id in {
+                            subentry.unique_id
+                            for subentry in self._get_entry().subentries.values()
+                        }
+                        if unique_id != "document"
+                    }
                     return self.async_create_entry(
                         title=user_input.get(CONF_NAME),
                         data=self.data | user_input,
-                        unique_id=config_id,
+                        unique_id=str(
+                            max(unique_ids) + 1 if len(unique_ids) > 0 else 0
+                        ),
                     )
                 # Was there an issue?
                 iss_reg: ir.IssueRegistry = ir.async_get(self.hass)
@@ -555,8 +640,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                         f"{error_type}_{self._get_entry().entry_id}_{self._get_reconfigure_subentry().subentry_id}",
                     ):
                         ir.async_delete_issue(self.hass, DOMAIN, issue.issue_id)
-
-                return self.async_update_reload_and_abort(
+                return self.async_update_and_abort(
                     self._get_entry(),
                     self._get_reconfigure_subentry(),
                     title=user_input[CONF_NAME],
@@ -626,12 +710,21 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
             schema: vol.Schema = vol.Schema(step_schema)
 
         return self.async_show_form(
-            step_id="matches",
+            step_id="sensor",
             data_schema=schema,
             last_step=True,
             errors=errors,
             preview="target",
         )
+
+    def async_remove(self) -> None:
+        """Handle removal of this subentry."""
+        if self.preview_task is not None and not self.preview_task.done():
+            self.preview_task.cancel()
+        if self._progress_task is not None and not self._progress_task.done():
+            self._progress_task.cancel()
+        if self.pdf is not None:
+            self.hass.add_job(self.pdf.close)
 
 
 @websocket_api.websocket_command(
@@ -642,8 +735,8 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
         vol.Required("user_input"): dict,
     }
 )
-@callback
-def ws_start_preview(
+@websocket_api.async_response
+async def ws_start_preview(
     hass: HomeAssistant,
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
@@ -670,13 +763,13 @@ def ws_start_preview(
     user_input: dict[str, Any] = msg["user_input"]
 
     @callback
-    def async_preview_updated(
+    def async_preview_callback(
         state: str | None,
         attributes: Mapping[str, Any] | None,
-        listeners: dict[str, bool | set[str]] | None,
         error: str | None,
+        domain: str | None,
     ) -> None:
-        """Forward config entry state events to websocket."""
+        """Forward updates to websocket."""
         if error is not None:
             connection.send_message(
                 websocket_api.event_message(msg["id"], {"error": error})
@@ -685,18 +778,21 @@ def ws_start_preview(
         connection.send_message(
             websocket_api.event_message(
                 msg["id"],
-                {"attributes": attributes, "listeners": listeners, "state": state},
+                {
+                    "attributes": attributes,
+                    "domain": domain,
+                    "state": state,
+                },
             )
         )
 
-    page: int = 0
-    value: str | None = None
+    value: str | list[str] | None = None
     flow: TargetSubentryFlowHandler = cast(
         TargetSubentryFlowHandler,
         hass.config_entries.subentries._progress.get(msg["flow_id"]),  # noqa: SLF001
     )
     pdf: PDFScrape = flow.pdf
-    preview: PreviewSensorEntity | None = None
+    preview: PDFPreviewEntity | None = None
     if step in ["user", "reconfigure"]:
         user_input[CONF_NAME] = "Text"
         user_input[CONF_ICON] = "mdi:file-pdf-box"
@@ -704,14 +800,25 @@ def ws_start_preview(
         if re.fullmatch(REGEX_PAGE_RANGE_PATTERN, pages) is None:
             errors[CONF_PDF_PAGES] = "invalid_page_range"
         else:
+            if flow.preview_task is not None and not flow.preview_task.done():
+                flow.preview_task.cancel()
+                await flow.preview_task
+            flow.preview_task = flow.get_config_entry().async_create_task(
+                hass,
+                pdf.get_pages(pages, bool(user_input.get(CONF_OCR, False))),
+                "pdf_preview_pages",
+                True,
+            )
             try:
-                value = pdf.get_pages(pages)
+                await flow.preview_task
             except IndexError:
-                errors[CONF_PDF_PAGES] = "invalid_page_range"
+                errors[CONF_PDF_PAGES] = "pages_out_of_range"
+            if not errors:
+                value = flow.preview_task.result()
     else:
         pages = flow.data[CONF_PDF_PAGES]
-        value = pdf.get_pages(pages)
-        if step == "regex":
+        value = await pdf.get_pages(pages)
+        if step == "select":
             pattern: str | None = user_input.get(CONF_REGEX_SEARCH)
             if pattern:
                 user_input[CONF_ICON] = "mdi:text-box-search-outline"
@@ -723,32 +830,38 @@ def ws_start_preview(
                     )
                     if len(matches) > 1:
                         user_input[CONF_NAME] = f"{len(matches)} Matches"
-                        value = ", ".join(matches)
+                        matches = [
+                            match if len(match) < 30 else match[:25] + " ***"
+                            for match in matches
+                        ]
+                        preview = PreviewSelectEntity(
+                            matches,
+                            user_input,
+                        )
                     elif len(matches) == 1:
                         value = matches[0]
                         user_input[CONF_NAME] = "1 Match"
                     else:
-                        value = "No matches found."
-                        user_input[CONF_NAME] = "?"
+                        errors[CONF_REGEX_SEARCH] = "no_matches"
                 except re.PatternError as ex:
                     errors[CONF_REGEX_SEARCH] = str(ex.msg)
             else:
                 user_input[CONF_ICON] = "mdi:file-pdf-box"
                 user_input[CONF_NAME] = "Text"
-        elif step == "matches":
+        elif step == "sensor":
             # Generate preview
             regex: str | None = flow.data.get(CONF_REGEX_SEARCH)
             if regex:
                 matches: list[str] = re.findall(
                     regex,
-                    pdf.pages[page],
+                    await pdf.get_pages(pages),
                 )
                 match_idx: int = int(user_input[CONF_REGEX_MATCH_INDEX])
                 if match_idx >= 0:
                     value = matches[match_idx]
                 else:
                     value = matches
-                errors, preview = _validate_step_matches(
+                errors, preview = _validate_step_sensor(
                     hass, config=user_input, value=value
                 )
         else:
@@ -765,65 +878,94 @@ def ws_start_preview(
         )
         return
 
-    if not preview:
-        preview = PreviewSensorEntity(hass, config=user_input, value=value)
+    if preview is None:
+        preview = PreviewSensorEntity(value, user_input)
 
     connection.send_result(msg["id"])
-
-    connection.subscriptions[msg["id"]] = preview.async_start_preview(
-        async_preview_updated
+    connection.subscriptions[msg["id"]] = preview.async_show_preview(
+        async_preview_callback
     )
 
 
-class PreviewSensorEntity(SensorEntity):
+class PDFPreviewEntity(Entity):
     """Preview entity for frontend."""
 
-    def __init__(self, hass: HomeAssistant, config: dict[str, Any], value: str) -> None:
+    def __init__(self, config: dict[str, Any], domain: str) -> None:
         """Initialize a preview entity."""
 
-        self.hass: HomeAssistant = hass
         self._attr_name = config.get(CONF_NAME, "Preview")
-        self._attr_device_class = config.get(CONF_DEVICE_CLASS)
-        self._attr_native_unit_of_measurement = config.get(CONF_UNIT_OF_MEASUREMENT)
-        self._attr_state_class = config.get(CONF_STATE_CLASS)
         self._attr_icon = config.get(CONF_ICON, "mdi:eye")
-        self._attr_native_value = (
-            value
-            if not isinstance(value, str)
-            else (value if len(value) < 255 else value[:251] + "  ***")
-        )
+        self.domain: str = domain
+        self._preview_callback: (
+            Callable[
+                [str | None, Mapping[str, Any] | None, str | None, str | None],
+                None,
+            ]
+            | None
+        ) = None
 
     @callback
-    def async_start_preview(
+    def async_show_preview(
         self,
         preview_callback: Callable[
             [
-                str | None,
-                Mapping[str, Any] | None,
-                dict[str, bool | set[str]] | None,
-                str | None,
+                str | None,  # state
+                Mapping[str, Any] | None,  # attributes
+                str | None,  # errors
+                str | None,  # domain
             ],
             None,
         ],
     ) -> CALLBACK_TYPE:
-        """Render a preview."""
-        errors: str | None = None
+        """Start a preview."""
+        error: str | None = None
         try:
             calculated_state: CalculatedState = self._async_calculate_state()
             preview_callback(
-                calculated_state.state, calculated_state.attributes, None, None
+                calculated_state.state,
+                calculated_state.attributes,
+                None,
+                self.domain,
             )
         except ValueError as ex:
-            errors = str(ex)
-            if len(errors) > 255:
-                errors = errors[:250] + " ***"
-        if errors:
-            preview_callback(None, None, None, errors)
-
+            error = str(ex)
+            if len(error) > 255:
+                error = error[:250] + " ***"
+        if error:
+            preview_callback(None, None, error, None)
         return self._call_on_remove_callbacks
 
 
-def _validate_step_matches(
+class PreviewSensorEntity(PDFPreviewEntity, SensorEntity):
+    """Preview sensor entity for frontend."""
+
+    def __init__(
+        self, value: str, config: dict[str, Any], domain: str | None = None
+    ) -> None:
+        """Initialize a preview entity."""
+        super().__init__(config, SENSOR_DOMAIN)
+        self.domain: str | None = domain
+        self._attr_device_class = config.get(CONF_DEVICE_CLASS)
+        self._attr_native_unit_of_measurement = config.get(CONF_UNIT_OF_MEASUREMENT)
+        self._attr_state_class = config.get(CONF_STATE_CLASS)
+        self._attr_native_value = value if len(value) < 255 else value[:251] + "  ***"
+
+
+class PreviewSelectEntity(PDFPreviewEntity, SelectEntity):
+    """Preview sensor entity for frontend."""
+
+    def __init__(
+        self,
+        options: list[str],
+        config: dict[str, Any],
+    ) -> None:
+        """Initialize a preview entity."""
+        super().__init__(config, SELECT_DOMAIN)
+        self._attr_options = options
+        self._attr_current_option = options[0] if len(options) > 0 else None
+
+
+def _validate_step_sensor(
     hass: HomeAssistant, config: dict[str, Any], value: str | list[str]
 ) -> tuple[dict[str, str], PreviewSensorEntity | None]:
     """Validate the matches step."""
@@ -853,5 +995,5 @@ def _validate_step_matches(
         errors[CONF_STATE_CLASS] = str(ex.msg)
     if errors:
         return errors, None
-    preview: PreviewSensorEntity = PreviewSensorEntity(hass, config=config, value=value)
+    preview: PreviewSensorEntity = PreviewSensorEntity(value=value, config=config)
     return errors, preview
