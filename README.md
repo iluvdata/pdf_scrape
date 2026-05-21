@@ -1,4 +1,8 @@
-# ![PDFScrape Logo](logo.svg) Integration
+<picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://github.com/iluvdata/pdf_scrape/blob/e5d3f28922f42cd0424766cb7d22c7656a406f7b/custom_components/pdf_scrape/brand/dark_logo.png">
+      <source media="(prefers-color-scheme: light)" srcset="https://github.com/iluvdata/pdf_scrape/blob/e5d3f28922f42cd0424766cb7d22c7656a406f7b/custom_components/pdf_scrape/brand/logo.png">
+      <img alt="PDFSCrape" src="https://github.com/iluvdata/pdf_scrape/blob/fc9c69a6df0a1eee890dd04aee880677aa7d6607/custom_components/pdf_scrape/brand/logo_web.png">
+</picture>
 
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg?style=flat-square&logo=homeassistantcommunitystore)](https://hacs.xyz/)
