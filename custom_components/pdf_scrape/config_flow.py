@@ -677,8 +677,8 @@ def ws_start_preview(
             )
         )
 
-    page: int = 0
-    value: str | None = None
+    pages: int = 0
+    value: str | list[str] | None = None
     flow: TargetSubentryFlowHandler = cast(
         TargetSubentryFlowHandler,
         hass.config_entries.subentries._progress.get(msg["flow_id"]),  # noqa: SLF001
@@ -729,7 +729,7 @@ def ws_start_preview(
             if regex:
                 matches: list[str] = re.findall(
                     regex,
-                    pdf.pages[page],
+                    pdf.get_pages(pages),
                 )
                 match_idx: int = int(user_input[CONF_REGEX_MATCH_INDEX])
                 if match_idx >= 0:
