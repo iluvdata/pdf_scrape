@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 import logging
+from random import SystemRandom
 import re
 from typing import Any
 
@@ -12,7 +13,7 @@ from homeassistant.exceptions import ConfigEntryError, TemplateError
 import homeassistant.helpers.issue_registry as ir
 from homeassistant.helpers.template import Template, TemplateVarsType
 from homeassistant.helpers.translation import async_get_exception_message
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
     CONF_DEFAULT_SCAN_INTERVAL,
@@ -60,6 +61,8 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
         )
         self.pdf: PDFScrape = pdf
         self.data = {}
+        self.http_error_count: int = 0
+        self.access_token: str = hex(SystemRandom().getrandbits(256))[2:]
 
     async def _async_update_data(self) -> dict[str, str]:
         """Perform the update."""
@@ -136,13 +139,17 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
                             )
                     self.data[subentry_key] = txt
         except (HTTPError, PDFParseError) as ex:
-            # TODO: if http error do we retry?
+            if isinstance(ex, HTTPError) and self.http_error_count < 3:
+                self.http_error_count += 1
+                raise UpdateFailed(retry_after=30) from ex
             async_raise_error(
                 hass=self.hass,
                 error_key=ErrorTypes.PDF_ERROR,
                 config_entry=self.config_entry,
                 exception=ex,
+                error_type=UpdateFailed,
             )
+        self.http_error_count = 0
 
         return self.data
 
@@ -205,6 +212,7 @@ def async_raise_error(
     exception: Exception | None = None,
     translation_placeholders: dict[str, Any] | None = None,
     config_subentry: ConfigSubentry | None = None,
+    error_type: ConfigEntryError | UpdateFailed = ConfigEntryError,
 ) -> None:
     """Log issues, create repairs, and raise exceptions."""
 
@@ -239,12 +247,12 @@ def async_raise_error(
         translation_placeholders=translation_placeholders,
     )
     if exception is not None:
-        raise ConfigEntryError(
+        raise error_type(
             translation_domain=DOMAIN,
             translation_key=error_key,
             translation_placeholders=translation_placeholders,
         ) from exception
-    raise ConfigEntryError(
+    raise error_type(
         translation_domain=DOMAIN,
         translation_key=error_key,
         translation_placeholders=translation_placeholders,

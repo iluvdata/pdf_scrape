@@ -49,6 +49,7 @@ from .coordinator import (
     PDFScrapeUploadCoordinator,
     async_raise_error,
 )
+from .http import PDFView
 from .pdf import (
     PDF,
     FileError,
@@ -60,7 +61,7 @@ from .pdf import (
     get_store,
 )
 
-_PLATFORMS: list[Platform] = [Platform.SENSOR]
+_PLATFORMS: list[Platform] = [Platform.IMAGE, Platform.SENSOR]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -189,6 +190,8 @@ async def async_setup(hass: HomeAssistant, config_type: ConfigType) -> bool:
                     )
                     tg.create_task(async_run_in_loop(hass, file.unlink))
 
+    hass.http.register_view(PDFView(hass))
+
     return True
 
 
@@ -286,7 +289,6 @@ async def async_remove_config_entry_device(
     hass: HomeAssistant, config_entry: ConfigEntry, device_entry: dr.DeviceEntry
 ) -> bool:
     """Handle pre-device delete checks."""
-    # TODO: Tesseract device:  Also delete config_entry
 
 
 async def update_listener(hass: HomeAssistant, config_entry: ConfigEntry):

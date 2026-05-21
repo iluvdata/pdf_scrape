@@ -16,6 +16,7 @@ from httpx import HTTPStatusError, RequestError, Response
 from PIL import Image
 from pydantic import BaseModel, Field
 from pymupdf import Document, Pixmap, TextPage
+from pymupdf4llm import to_text
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.httpx_client import get_async_client
@@ -285,7 +286,7 @@ class PDFScrape(ABC):
             for page in page_nums:
                 page_index = page - 1
                 if page_index not in self.pdf.pages or (
-                    ocr and not self.pdf.pages[page_index].ocr
+                    ocr != self.pdf.pages[page_index].ocr
                 ):
                     tasks[page_index] = tg.create_task(
                         self._get_page_text(page_index, ocr)
@@ -336,12 +337,21 @@ class PDFScrape(ABC):
     async def _get_page_text(self, page_index: int, ocr: bool = False) -> str:
         """Get text from a specific page."""
         await self._load_document_from_file_or_cache()
-        text_page: TextPage = await self.hass.async_add_executor_job(
-            self._document[page_index].get_textpage
-            if not ocr
-            else self._document[page_index].get_textpage_ocr
+        if not ocr:
+            text_page: TextPage = await self.hass.async_add_executor_job(
+                self._document[page_index].get_textpage
+            )
+            return await self.hass.async_add_executor_job(text_page.extractText)
+        return await self.hass.async_add_executor_job(
+            partial(
+                to_text,
+                self._document,
+                use_ocr=True,
+                header=True,
+                footer=True,
+                pages=[page_index],
+            )
         )
-        return await self.hass.async_add_executor_job(text_page.extractText)
 
     async def get_pages(self, page_range: str, ocr: bool = False) -> str:
         """Parse page range string into list of page numbers."""
@@ -506,11 +516,12 @@ class PDFScrapeUpload(PDFScrape):
     ) -> None:
         """Initialize for cached files only."""
         super().__init__(hass, config_entry_id)
-        if isinstance(file, str):
-            file = Path(file)
-        with file.open(mode="rb") as pdf_file:
-            self._stream = BytesIO()
-            self._stream.write(pdf_file.read)
+        if file:
+            if isinstance(file, str):
+                file = Path(file)
+            with file.open(mode="rb") as pdf_file:
+                self._stream = BytesIO()
+                self._stream.write(pdf_file.read())
 
     @classmethod
     async def async_from_file(

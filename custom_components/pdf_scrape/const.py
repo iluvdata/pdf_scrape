@@ -8,7 +8,7 @@ from typing import Final
 from homeassistant.config_entries import ConfigSubentry
 
 CONF_DEFAULT_SCAN_INTERVAL: Final[timedelta] = timedelta(minutes=5)
-CONF_MIN_SCAN_INTERVAL: Final[timedelta] = timedelta(seconds=30)
+CONF_MIN_SCAN_INTERVAL: Final[timedelta] = timedelta(minutes=1)
 DOMAIN: Final[str] = "pdf_scrape"
 CONF_PDF_PAGES: Final[str] = "pdf_pages"
 CONF_REGEX_SEARCH: Final[str] = "regex_search"

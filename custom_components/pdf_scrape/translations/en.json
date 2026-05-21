@@ -72,11 +72,14 @@
     }
   },
   "config_subentries": {
+    "document": {
+      "entry_type": "PDF Document (do not delete)"
+    },
     "target": {
       "initiate_flow": {
         "user": "Add Search Target"
       },
-      "entry_type": "Scrape Target",
+      "entry_type": "Search Target",
       "step": {
         "user": {
           "title": "Target Page(s)",
@@ -87,10 +90,10 @@
           },
           "data_description": {
             "pdf_pages": "Pages in PDF: {pages}. Use comma to separate multiple pages or hyphen for page ranges (e.g., 1,3-5,7).",
-            "ocr": "Use OCR to extract text.  This can be very slow and resource intensive, particularly for a large number of pages.  Use only if the PDF contains images and text extraction is not working.  OCR results can be highly variable and may not produce usable results depending on the quality of the source PDF.  Currently only English documents are supported. When possible, consider using an OCR tool prior to configuring the PDF in Home Assistant. \n \n This is disabled until tesseract is available."
+            "ocr": "Use OCR to extract text.  This can be very slow and resource intensive, particularly for a large number of pages.  Use only if the PDF contains images and text extraction is not working.  OCR results can be highly variable and may not produce usable results depending on the quality of the source PDF.  Currently only English documents are supported. When possible, consider using an OCR tool prior to configuring the PDF in Home Assistant."
           }
         },
-        "select": {
+        "regex": {
           "title": "Regular Expression",
           "description": "Pages {pdf_pages}: {title}",
           "data": {

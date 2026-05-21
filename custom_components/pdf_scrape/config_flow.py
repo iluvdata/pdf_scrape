@@ -55,7 +55,6 @@ from homeassistant.helpers.entity import CalculatedState, Entity
 import homeassistant.helpers.issue_registry as ir
 from homeassistant.helpers.selector import (
     BooleanSelector,
-    BooleanSelectorConfig,
     DurationSelector,
     DurationSelectorConfig,
     FileSelector,
@@ -108,7 +107,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
     MINOR_VERSION: int = 2
 
     data: dict[str, str | timedelta | None] = {}
-    placeholders: dict[str, str] | None = None
+    placeholders: dict[str, str] | None = {}
     reason: str = "already_configured"
     pdf: PDFScrape
     title_fun: Callable[[], str] | None = None
@@ -133,7 +132,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_finish(
         self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult | None:
+    ) -> ConfigFlowResult:
         """Finish this flow."""
         await self.async_set_unique_id(self.unique_fun())
         if entry := self.hass.config_entries.async_entry_for_domain_unique_id(
@@ -476,7 +475,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
             self._progress_task = self.get_config_entry().async_create_task(
                 self.hass,
                 self.pdf.get_pages(
-                    user_input[CONF_PDF_PAGES], user_input.get(CONF_OCR, False)
+                    user_input[CONF_PDF_PAGES], bool(user_input.get(CONF_OCR, False))
                 ),
                 "step_user_get_pages",
                 True,
@@ -491,7 +490,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                     self._progress_task = None
                 else:
                     self._progress_task = None
-                    return self.async_show_progress_done(next_step_id="select")
+                    return self.async_show_progress_done(next_step_id="regex")
             else:
                 return self.async_show_progress(
                     step_id="user",
@@ -513,11 +512,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                     vol.Required(CONF_PDF_PAGES, default=default_pages): TextSelector(
                         TextSelectorConfig(type=TextSelectorType.TEXT)
                     ),
-                    vol.Optional(CONF_OCR, default=ocr): BooleanSelector(
-                        BooleanSelectorConfig(
-                            read_only=True  # until we figure out tesseract app.
-                        )
-                    ),
+                    vol.Optional(CONF_OCR, default=ocr): BooleanSelector(),
                 }
             ),
             description_placeholders={
@@ -534,12 +529,14 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
         """Set up preview WS API."""
         websocket_api.async_register_command(hass, ws_start_preview)
 
-    async def async_step_select(
+    async def async_step_regex(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Get the regex."""
         errors: dict[str, str] = {}
-        text: str = await self.pdf.get_pages(self.data[CONF_PDF_PAGES])
+        text: str = await self.pdf.get_pages(
+            self.data[CONF_PDF_PAGES], self.data[CONF_OCR]
+        )
 
         if user_input and CONF_REGEX_SEARCH in user_input:
             # Validate that it's a valid regex
@@ -574,7 +571,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                 schema, self._get_reconfigure_subentry().data
             )
         return self.async_show_form(
-            step_id="select",
+            step_id="regex",
             data_schema=schema,
             description_placeholders={
                 "title": self._get_entry().title,
@@ -731,7 +728,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
     {
         vol.Required("type"): "target/start_preview",
         vol.Required("flow_id"): str,
-        vol.Required("flow_type"): vol.Any("config_subentries_flow"),
+        vol.Required("flow_type"): vol.All("config_subentries_flow"),
         vol.Required("user_input"): dict,
     }
 )
@@ -742,10 +739,8 @@ async def ws_start_preview(
     msg: dict[str, Any],
 ) -> None:
     """Generate a preview."""
-    # entity_registry_entry: er.RegistryEntry | None = None
-    if msg["flow_type"] != "config_subentries_flow":
-        raise HomeAssistantError("invalid_flow")
-        # Get the config flow status
+
+    # Get the config flow status
     flow_status: SubentryFlowResult = hass.config_entries.subentries.async_get(
         msg["flow_id"]
     )
@@ -756,7 +751,6 @@ async def ws_start_preview(
     )
     if not config_entry:
         raise HomeAssistantError
-    # pdf: PDFScrape = config_entry.runtime_data.pdf
 
     errors: dict[str, str] = {}
 
@@ -818,7 +812,7 @@ async def ws_start_preview(
     else:
         pages = flow.data[CONF_PDF_PAGES]
         value = await pdf.get_pages(pages)
-        if step == "select":
+        if step == "regex":
             pattern: str | None = user_input.get(CONF_REGEX_SEARCH)
             if pattern:
                 user_input[CONF_ICON] = "mdi:text-box-search-outline"
@@ -939,12 +933,9 @@ class PDFPreviewEntity(Entity):
 class PreviewSensorEntity(PDFPreviewEntity, SensorEntity):
     """Preview sensor entity for frontend."""
 
-    def __init__(
-        self, value: str, config: dict[str, Any], domain: str | None = None
-    ) -> None:
+    def __init__(self, value: str, config: dict[str, Any]) -> None:
         """Initialize a preview entity."""
         super().__init__(config, SENSOR_DOMAIN)
-        self.domain: str | None = domain
         self._attr_device_class = config.get(CONF_DEVICE_CLASS)
         self._attr_native_unit_of_measurement = config.get(CONF_UNIT_OF_MEASUREMENT)
         self._attr_state_class = config.get(CONF_STATE_CLASS)
