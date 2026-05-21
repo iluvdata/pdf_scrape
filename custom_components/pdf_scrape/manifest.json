@@ -1,7 +1,7 @@
 {
   "domain": "pdf_scrape",
   "name": "PDF Scrape",
-  "after_dependencies": ["hassio"],
+  "after_dependencies": ["hassio", "file_upload"],
   "codeowners": ["@iluvdata"],
   "config_flow": true,
   "dependencies": ["template"],
