@@ -48,7 +48,7 @@ class PDFRepairFlow(PDFScrapeRepairFlow):
     """Repair for PDF errors."""
 
     async def _async_get_next_flow(self) -> ConfigFlowResult:
-        next_flow: ConfigFlowResult = self.hass.config_entries.flow.async_init(
+        next_flow: ConfigFlowResult = await self.hass.config_entries.flow.async_init(
             DOMAIN,
             context=ConfigFlowContext(
                 entry_id=self.data["entry_id"], source=SOURCE_RECONFIGURE
