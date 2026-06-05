@@ -25,14 +25,7 @@ from .const import (
     DOMAIN,
     ErrorTypes,
 )
-from .pdf import (
-    HTTPError,
-    PDFParseError,
-    PDFScrape,
-    PDFScrapeFile,
-    PDFScrapeHTTP,
-    PDFScrapeUpload,
-)
+from .pdf import HTTPError, PDFScrape, PDFScrapeFile, PDFScrapeHTTP, PDFScrapeUpload
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -138,7 +131,7 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
                                 config_subentry=subentry_conf,
                             )
                     self.data[subentry_key] = txt
-        except (HTTPError, PDFParseError) as ex:
+        except HTTPError as ex:
             if isinstance(ex, HTTPError) and self.http_error_count < 3:
                 self.http_error_count += 1
                 raise UpdateFailed(retry_after=30) from ex
@@ -223,11 +216,7 @@ def async_raise_error(
     )
     msg: str = ""
     if exception is not None:
-        msg = (
-            str(exception)
-            if not isinstance(exception, PDFParseError)
-            else "Unable to parse pdf"
-        )
+        msg = str(exception)
     translation_placeholders["msg"] = msg
     data: dict[str, Any] = {
         "entry_id": config_entry.entry_id,

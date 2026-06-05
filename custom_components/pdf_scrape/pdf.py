@@ -220,7 +220,7 @@ class PDFScrape(ABC):
             if len(self.pdf.pages) > 0:
                 # already loaded pages, do we need to re-ocr them?
                 await self._get_pages(set(self.pdf.pdf.pages.keys()), update=True)
-            await self.store.async_save(self.pdf.model_dump())
+            await self.save_to_store()
             # Generate a thumbnail
             pixmap: Pixmap = await self.hass.async_add_executor_job(
                 self._document[0].get_pixmap
@@ -271,6 +271,11 @@ class PDFScrape(ABC):
             await self.hass.async_add_executor_job(self._document.close)
         if hasattr(self, "_stream") and not self._stream.closed:
             self._stream.close()
+
+    async def save_to_store(self) -> None:
+        """Save the PDF to the store."""
+        if self.store is not None:
+            await self.store.async_save(self.pdf.model_dump())
 
     async def _get_pages(
         self,
@@ -338,10 +343,12 @@ class PDFScrape(ABC):
         """Get text from a specific page."""
         await self._load_document_from_file_or_cache()
         if not ocr:
-            text_page: TextPage = await self.hass.async_add_executor_job(
-                self._document[page_index].get_textpage
-            )
-            return await self.hass.async_add_executor_job(text_page.extractText)
+
+            def wrap_extract_text() -> str:
+                text_page: TextPage = self._document[page_index].get_textpage()
+                return text_page.extractText()
+
+            return await self.hass.async_add_executor_job(wrap_extract_text)
         return await self.hass.async_add_executor_job(
             partial(
                 to_text,
@@ -564,10 +571,6 @@ class PDFScrapeUpload(PDFScrape):
     def __repr__(self):
         """Representation."""
         return f"PDF Uploaded - {self.pdf.title}" if self.pdf.title else "PDF Uploaded"
-
-
-class PDFParseError(Exception):
-    """Unable to parse pdf."""
 
 
 class StoredFileError(Exception):

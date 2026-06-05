@@ -90,7 +90,6 @@ from .const import (
 from .pdf import (
     FileError,
     HTTPError,
-    PDFParseError,
     PDFScrape,
     PDFScrapeFile,
     PDFScrapeHTTP,
@@ -158,7 +157,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
             DOMAIN,
             f"{ErrorTypes.PDF_ERROR}_{self._get_reconfigure_entry().entry_id}",
         )
-        return self.async_update_and_abort(
+        return self.async_update_reload_and_abort(
             self._get_reconfigure_entry(),
             title=title,
             data=self.data,
@@ -201,9 +200,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
             if exception := self.process_task.exception():
                 _LOGGER.debug("Progress task exception", exc_info=exception)
                 self.placeholders["msg"] = str(exception)
-                if isinstance(exception, PDFParseError):
-                    self.reason = "pdf_parse"
-                elif isinstance(exception, HTTPError):
+                if isinstance(exception, HTTPError):
                     self.reason = "http_error"
                 elif isinstance(exception, FileError):
                     self.reason = "file_error"
@@ -490,6 +487,8 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                     self._progress_task = None
                 else:
                     self._progress_task = None
+                    # Save the new pages
+                    await self.pdf.save_to_store()
                     return self.async_show_progress_done(next_step_id="regex")
             else:
                 return self.async_show_progress(
@@ -637,7 +636,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                         f"{error_type}_{self._get_entry().entry_id}_{self._get_reconfigure_subentry().subentry_id}",
                     ):
                         ir.async_delete_issue(self.hass, DOMAIN, issue.issue_id)
-                return self.async_update_and_abort(
+                return self.async_update_reload_and_abort(
                     self._get_entry(),
                     self._get_reconfigure_subentry(),
                     title=user_input[CONF_NAME],
