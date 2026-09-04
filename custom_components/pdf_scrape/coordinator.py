@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 import logging
+from random import SystemRandom
 import re
 from typing import Any
 
@@ -12,7 +13,7 @@ from homeassistant.exceptions import ConfigEntryError, TemplateError
 import homeassistant.helpers.issue_registry as ir
 from homeassistant.helpers.template import Template, TemplateVarsType
 from homeassistant.helpers.translation import async_get_exception_message
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
     CONF_DEFAULT_SCAN_INTERVAL,
@@ -24,14 +25,7 @@ from .const import (
     DOMAIN,
     ErrorTypes,
 )
-from .pdf import (
-    HTTPError,
-    PDFParseError,
-    PDFScrape,
-    PDFScrapeHTTP,
-    PDFScrapeLocal,
-    PDFScrapeUpload,
-)
+from .pdf import HTTPError, PDFScrape, PDFScrapeFile, PDFScrapeHTTP, PDFScrapeUpload
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -60,19 +54,22 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
         )
         self.pdf: PDFScrape = pdf
         self.data = {}
+        self.http_error_count: int = 0
+        self.access_token: str = hex(SystemRandom().getrandbits(256))[2:]
 
     async def _async_update_data(self) -> dict[str, str]:
         """Perform the update."""
         try:
             if not self.data or await self.pdf.update():
-                for subentry_conf_key in self.config_entry.subentries:
-                    subentry_conf: ConfigSubentry = self.config_entry.subentries[
-                        subentry_conf_key
-                    ]
+                for subentry_key, subentry_conf in self.config_entry.subentries.items():
+                    if subentry_conf.subentry_type == "document":
+                        continue
 
                     txt: str = ""
                     try:
-                        txt = self.pdf.get_pages(subentry_conf.data[CONF_PDF_PAGES])
+                        txt = await self.pdf.get_pages(
+                            subentry_conf.data[CONF_PDF_PAGES]
+                        )
                     except IndexError as ex:
                         async_raise_error(
                             hass=self.hass,
@@ -133,14 +130,19 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
                                 exception=ex,
                                 config_subentry=subentry_conf,
                             )
-                    self.data[subentry_conf_key] = txt
-        except (HTTPError, PDFParseError) as ex:
+                    self.data[subentry_key] = txt
+        except HTTPError as ex:
+            if isinstance(ex, HTTPError) and self.http_error_count < 3:
+                self.http_error_count += 1
+                raise UpdateFailed(retry_after=30) from ex
             async_raise_error(
                 hass=self.hass,
                 error_key=ErrorTypes.PDF_ERROR,
                 config_entry=self.config_entry,
                 exception=ex,
+                error_type=UpdateFailed,
             )
+        self.http_error_count = 0
 
         return self.data
 
@@ -183,14 +185,14 @@ class PDFScrapeUploadCoordinator(PDFScrapeCoordinator):
         await self._async_update_data()
 
 
-class PDFScrapeLocalCoordinator(PDFScrapeCoordinator):
+class PDFScrapeFileCoordinator(PDFScrapeCoordinator):
     """Data coordinator to download and parse the files."""
 
     def __init__(
         self,
         hass: HomeAssistant,
         config_entry: PDFScrapeConfigEntry,
-        pdf: PDFScrapeLocal,
+        pdf: PDFScrapeFile,
     ) -> None:
         """Initialize coordinator."""
         super().__init__(hass, config_entry, pdf, CONF_MIN_SCAN_INTERVAL)
@@ -200,9 +202,10 @@ def async_raise_error(
     hass: HomeAssistant,
     error_key: str,
     config_entry: PDFScrapeConfigEntry,
-    exception: Exception,
+    exception: Exception | None = None,
     translation_placeholders: dict[str, Any] | None = None,
     config_subentry: ConfigSubentry | None = None,
+    error_type: ConfigEntryError | UpdateFailed = ConfigEntryError,
 ) -> None:
     """Log issues, create repairs, and raise exceptions."""
 
@@ -211,11 +214,9 @@ def async_raise_error(
     translation_placeholders["conf"] = (
         config_entry.title if config_subentry is None else config_subentry.title
     )
-    msg = (
-        str(exception)
-        if not isinstance(exception, PDFParseError)
-        else "Unable to parse pdfS"
-    )
+    msg: str = ""
+    if exception is not None:
+        msg = str(exception)
     translation_placeholders["msg"] = msg
     data: dict[str, Any] = {
         "entry_id": config_entry.entry_id,
@@ -235,12 +236,12 @@ def async_raise_error(
         translation_placeholders=translation_placeholders,
     )
     if exception is not None:
-        raise ConfigEntryError(
+        raise error_type(
             translation_domain=DOMAIN,
             translation_key=error_key,
             translation_placeholders=translation_placeholders,
         ) from exception
-    raise ConfigEntryError(
+    raise error_type(
         translation_domain=DOMAIN,
         translation_key=error_key,
         translation_placeholders=translation_placeholders,

@@ -9,6 +9,6 @@
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/iluvdata/pdf_scrpae/issues",
-  "requirements": ["pypdf~=5.2.0"],
-  "version": "2026.6.0"
+  "requirements": ["pymupdf==1.28.2","pymupdf4llm==1.28.2","rapidocr==3.9.2","onnxruntime==1.29.0"],
+  "version": "2026.9.0"
 }

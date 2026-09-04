@@ -23,8 +23,6 @@ Configuration via Homeassistant UI.
 
 The recommended way to install this is via HACS:
 
-
-
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?category=custom_respository&owner=iluvdata&repository=pdf_scrape)
 
 #### Semi-manual install
