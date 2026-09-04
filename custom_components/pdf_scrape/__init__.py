@@ -25,6 +25,7 @@ from homeassistant.core import (
 from homeassistant.exceptions import ConfigEntryError, ServiceValidationError
 import homeassistant.helpers.config_validation as cv
 import homeassistant.helpers.device_registry as dr
+from homeassistant.helpers.network import get_url
 from homeassistant.helpers.selector import FileSelector, FileSelectorConfig
 from homeassistant.helpers.storage import STORAGE_DIR, Store
 from homeassistant.helpers.typing import ConfigType
@@ -34,7 +35,6 @@ from .const import (
     CONF_MODIFIED,
     CONF_MODIFIED_SOURCE,
     CONF_SHA256_CHECKSUM,
-    DOCUMENT_SUBENTRY,
     DOMAIN,
     ConfType,
     ErrorTypes,
@@ -121,7 +121,7 @@ async def async_setup(hass: HomeAssistant, config_type: ConfigType) -> bool:
             raise vol.Invalid("Either device_id or config_entry_id must be specified.")
         return data
 
-    SCHEMA: vol.Schema = vol.Schema(
+    schema: vol.Schema = vol.Schema(
         vol.All(
             {
                 vol.Optional(ATTR_CONFIG_ENTRY_ID): vol.All(cv.ensure_list, _only_one),
@@ -138,7 +138,7 @@ async def async_setup(hass: HomeAssistant, config_type: ConfigType) -> bool:
         DOMAIN,
         "upload_pdf",
         upload_pdf,
-        SCHEMA,
+        schema,
         SupportsResponse.OPTIONAL,
     )
 
@@ -195,8 +195,7 @@ async def async_setup_entry(
     hass: HomeAssistant, config_entry: PDFScrapeConfigEntry
 ) -> bool:
     """Set up the config entry."""
-    if not config_entry.get_subentries_of_type(DOCUMENT_SUBENTRY.subentry_type):
-        hass.config_entries.async_add_subentry(config_entry, DOCUMENT_SUBENTRY)
+
     try:
         coordinator: PDFScrapeCoordinator
         match config_entry.data[CONF_TYPE]:
@@ -258,6 +257,25 @@ async def async_setup_entry(
 
         config_entry.runtime_data = coordinator
 
+        device_info = dr.DeviceInfo(
+            identifiers={(DOMAIN, config_entry.entry_id)},
+            name=config_entry.title,
+            entry_type=dr.DeviceEntryType.SERVICE,
+            configuration_url=f"{get_url(config_entry.runtime_data.hass)}/api/pdf_scrape/pdf/{config_entry.entry_id}.pdf?token={config_entry.runtime_data.access_token}",
+        )
+        match config_entry.data[CONF_TYPE]:
+            case ConfType.LOCAL:
+                device_info["model"] = config_entry.data[CONF_FILE]
+            case ConfType.HTTP:
+                device_info["configuration_url"] = config_entry.data[CONF_URL]
+                device_info["model"] = config_entry.data[CONF_URL]
+            case ConfType.UPLOAD:
+                device_info["model"] = config_entry.title
+        dev_reg = dr.async_get(hass)
+        dev_reg.async_get_or_create(
+            config_entry_id=config_entry.entry_id, **device_info
+        )
+
         await hass.config_entries.async_forward_entry_setups(config_entry, _PLATFORMS)
 
     except (HTTPError, TimeoutError, FileError) as ex:
@@ -271,10 +289,28 @@ async def async_setup_entry(
     return True
 
 
-async def async_remove_config_entry_device(
-    hass: HomeAssistant, config_entry: ConfigEntry, device_entry: dr.DeviceEntry
+async def async_migrate_entry(
+    hass: HomeAssistant, config_entry: PDFScrapeConfigEntry
 ) -> bool:
-    """Handle pre-device delete checks."""
+    """Migrate old entry."""
+
+    if config_entry.version == 1 and config_entry.minor_version == 2:
+        _LOGGER.debug(
+            "Migrating configuration from version %s.%s",
+            config_entry.version,
+            config_entry.minor_version,
+        )
+        for subentry_id, subentry in config_entry.subentries.items():
+            if subentry.subentry_type == "document":
+                hass.config_entries.async_remove_subentry(config_entry, subentry_id)
+                break
+        _LOGGER.debug(
+            "Migration to configuration version %s.%s successful",
+            config_entry.version,
+            config_entry.minor_version,
+        )
+
+    return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -288,19 +324,16 @@ def async_cleanup(hass: HomeAssistant, entry_or_flow_id: str) -> None:
 
     path: Path = Path(hass.config.path(STORAGE_DIR), DOMAIN)
 
-    @callback
-    def _remove_files() -> None:
+    async def _remove_files() -> None:
         """Wrapper function for blocking code."""
-        if path.exists():
-            for file in path.iterdir():
+        if await hass.async_add_executor_job(path.exists):
+            for file in await hass.async_add_executor_job(path.iterdir):
                 if file.stem == entry_or_flow_id and file.suffix in [".pdf", ".webp"]:
-                    file.unlink()
+                    await hass.async_add_executor_job(file.unlink)
 
-    hass.add_job(_remove_files)
+    hass.create_task(_remove_files(), f"{DOMAIN}._remove_files")
     if store := get_store(hass, entry_or_flow_id):
-        hass.async_create_background_task(
-            store.async_remove(), f"{DOMAIN}.remove_store"
-        )
+        hass.create_task(store.async_remove(), f"{DOMAIN}.remove_store")
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:

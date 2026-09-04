@@ -80,7 +80,6 @@ from .const import (
     CONF_REGEX_MATCH_INDEX,
     CONF_REGEX_SEARCH,
     CONF_VALUE_TEMPLATE,
-    DOCUMENT_SUBENTRY,
     DOMAIN,
     REGEX_PAGE_RANGE_PATTERN,
     URL_FILE_INTEGRATION,
@@ -103,7 +102,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
     """PDF Scrape Config Flow Class."""
 
     VERSION: int = 1
-    MINOR_VERSION: int = 2
+    MINOR_VERSION: int = 3
 
     data: dict[str, str | timedelta | None] = {}
     placeholders: dict[str, str] | None = {}
@@ -147,11 +146,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
         title: str = self.data[CONF_NAME] if not self.title_fun else self.title_fun()
         if self.source == SOURCE_USER:
-            return self.async_create_entry(
-                title=title,
-                data=self.data,
-                subentries=[DOCUMENT_SUBENTRY.as_dict()],
-            )
+            return self.async_create_entry(title=title, data=self.data)
         ir.async_delete_issue(
             self.hass,
             DOMAIN,
@@ -182,7 +177,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
         """Handle errors during processing."""
-        await async_cleanup(self.hass, self.flow_id)
+        async_cleanup(self.hass, self.flow_id)
         return self.async_abort(
             reason=self.reason,
             description_placeholders=self.placeholders,

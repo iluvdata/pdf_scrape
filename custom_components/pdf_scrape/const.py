@@ -5,8 +5,6 @@ from enum import StrEnum
 from re import Pattern
 from typing import Final
 
-from homeassistant.config_entries import ConfigSubentry
-
 CONF_DEFAULT_SCAN_INTERVAL: Final[timedelta] = timedelta(minutes=5)
 CONF_MIN_SCAN_INTERVAL: Final[timedelta] = timedelta(minutes=1)
 DOMAIN: Final[str] = "pdf_scrape"
@@ -42,8 +40,3 @@ class ConfType(StrEnum):
     HTTP = "http"
     UPLOAD = "upload"
     LOCAL = "local"
-
-
-DOCUMENT_SUBENTRY: ConfigSubentry = ConfigSubentry(
-    subentry_type="document", title="PDF", unique_id="document", data={}
-)

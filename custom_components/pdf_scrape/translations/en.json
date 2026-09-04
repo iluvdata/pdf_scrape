@@ -65,10 +65,10 @@
       "upload_already_configured": "A PDF with the same sha256 checksum is already uploaded. While there is an exceedingly small chance that 2 different pdf files will have the same checksum it's very unlikely.  If you are certain that they pdf files are different, alter the metadata of the pdf file you are uploading which will create a unique checksum.",
       "file_already_configured": "A PDF @ {file} is already configured",
       "reconfigure_successful": "PDF Reconfiguration successful.",
-      "pdf_parse": "[%key:component::pdf_scrape::config::error::pdf_parse%]",
-      "exception": "[%key:component::pdf_scrape::config::error::exception%]",
-      "http_error": "[%key:component::pdf_scrape::config::error::http_error%]",
-      "file_error": "[%key:component::pdf_scrape::config::error::file_error%]"
+      "pdf_parse": "Cannot parse PDF: {msg}",
+      "exception": "Error: {msg}",
+      "http_error": "Cannot access PDF @ provided URL: {msg}",
+      "file_error": "File access error: {msg}"
     }
   },
   "config_subentries": {
