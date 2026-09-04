@@ -198,7 +198,9 @@ async def async_setup_entry(
 
     try:
         coordinator: PDFScrapeCoordinator
-        match config_entry.data[CONF_TYPE]:
+        match config_entry.data[
+            CONF_TYPE
+        ]:  # Default to HTTP if type is not set (for legacy entries)
             case ConfType.HTTP:
                 pdfhttp: PDFScrapeHTTP = await PDFScrapeHTTP.pdfscrape(
                     hass,
