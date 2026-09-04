@@ -72,9 +72,6 @@
     }
   },
   "config_subentries": {
-    "document": {
-      "entry_type": "PDF Document (do not delete)"
-    },
     "target": {
       "initiate_flow": {
         "user": "Add Search Target"
