@@ -64,7 +64,7 @@
       "http_already_configured": "A PDF @ {url} is already configured",
       "upload_already_configured": "A PDF with the same sha256 checksum is already uploaded. While there is an exceedingly small chance that 2 different pdf files will have the same checksum it's very unlikely.  If you are certain that they pdf files are different, alter the metadata of the pdf file you are uploading which will create a unique checksum.",
       "file_already_configured": "A PDF @ {file} is already configured",
-      "reconfigure_successful": "PDF Reconfiguration successful.",
+      "reconfigure_successful": "Reconfiguration successful.",
       "pdf_parse": "Cannot parse PDF: {msg}",
       "exception": "Error: {msg}",
       "http_error": "Cannot access PDF @ provided URL: {msg}",

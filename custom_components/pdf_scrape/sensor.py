@@ -11,9 +11,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import (
     CONF_DEVICE_CLASS,
-    CONF_TYPE,
     CONF_UNIT_OF_MEASUREMENT,
-    CONF_URL,
     EntityCategory,
 )
 from homeassistant.core import HomeAssistant, callback
@@ -23,13 +21,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import PDFScrapeConfigEntry
-from .const import (
-    CONF_FILE,
-    CONF_MODIFIED_SOURCE,
-    CONF_SHA256_CHECKSUM,
-    DOMAIN,
-    ConfType,
-)
+from .const import CONF_MODIFIED_SOURCE, CONF_SHA256_CHECKSUM, DOMAIN
 from .coordinator import PDFScrapeCoordinator
 
 

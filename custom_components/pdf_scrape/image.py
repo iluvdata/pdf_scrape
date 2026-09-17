@@ -66,7 +66,6 @@ class PDFImageEntity(ImageEntity, CoordinatorEntity[PDFScrapeCoordinator]):
                     f"{self.coordinator.config_entry.entry_id}.webp",
                 ),
                 "rb",
-                encoding="base64",
             ) as file:
                 return file.read()
         except FileNotFoundError:

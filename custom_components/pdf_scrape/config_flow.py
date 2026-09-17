@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Any, cast
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components import websocket_api
 from homeassistant.components.file_upload import process_uploaded_file
@@ -186,7 +186,6 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
     def _async_progress(self) -> ConfigFlowResult | str | None:
         if self.process_task is not None:
             if not self.process_task.done():
-                self.async_update_progress(self.pdf.progress)
                 return self.async_show_progress(
                     step_id=self.cur_step["step_id"],
                     progress_action="pdf_process",
@@ -238,18 +237,18 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
                         self.process_task = self.hass.async_create_task(
                             self.pdf.update(), "pdfscrape_process"
                         )
-                except vol.Invalid:
+                except probatio.Invalid:
                     errors[CONF_URL] = "invalid_url"
         if not errors and (result := self._async_progress()):
             return result
 
-        flow_schema: vol.Schema = vol.Schema(
+        flow_schema: probatio.Schema = probatio.Schema(
             {
-                vol.Optional(CONF_NAME): TextSelector(),
-                vol.Required(CONF_URL): TextSelector(
+                probatio.Optional(CONF_NAME): TextSelector(),
+                probatio.Required(CONF_URL): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.URL)
                 ),
-                vol.Required(CONF_SCAN_INTERVAL): DurationSelector(
+                probatio.Required(CONF_SCAN_INTERVAL): DurationSelector(
                     DurationSelectorConfig(enable_day=False, allow_negative=False)
                 ),
             }
@@ -333,10 +332,10 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
         if result := self._async_progress():
             return result
 
-        flow_schema: vol.Schema = vol.Schema(
+        flow_schema: probatio.Schema = probatio.Schema(
             {
-                vol.Optional(CONF_NAME): TextSelector(),
-                vol.Required(CONF_FILE): FileSelector(
+                probatio.Optional(CONF_NAME): TextSelector(),
+                probatio.Required(CONF_FILE): FileSelector(
                     FileSelectorConfig(accept="application/pdf,.pdf")
                 ),
             }
@@ -374,10 +373,10 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
         if result := await self._async_progress():
             return result
-        flow_schema: vol.Schema = vol.Schema(
+        flow_schema: probatio.Schema = probatio.Schema(
             {
-                vol.Optional(CONF_NAME): TextSelector(),
-                vol.Required(CONF_FILE): TextSelector(),
+                probatio.Optional(CONF_NAME): TextSelector(),
+                probatio.Required(CONF_FILE): TextSelector(),
             }
         )
         if self.source == SOURCE_RECONFIGURE:
@@ -503,12 +502,12 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
             ocr = self._get_reconfigure_subentry().data.get(CONF_OCR, False)
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_PDF_PAGES, default=default_pages): TextSelector(
-                        TextSelectorConfig(type=TextSelectorType.TEXT)
-                    ),
-                    vol.Optional(CONF_OCR, default=ocr): BooleanSelector(),
+                    probatio.Required(
+                        CONF_PDF_PAGES, default=default_pages
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+                    probatio.Optional(CONF_OCR, default=ocr): BooleanSelector(),
                 }
             ),
             description_placeholders={
@@ -552,12 +551,12 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
             # User wants all the txt.
             return await self.async_step_sensor(None)
 
-        schema: vol.Schema = vol.Schema(
+        schema: probatio.Schema = probatio.Schema(
             {
-                vol.Optional(CONF_REGEX_SEARCH): TextSelector(
+                probatio.Optional(CONF_REGEX_SEARCH): TextSelector(
                     TextSelectorConfig(multiline=True)
                 ),
-                vol.Required("page_text", default=text): TextSelector(
+                probatio.Required("page_text", default=text): TextSelector(
                     TextSelectorConfig(multiline=True, read_only=True)
                 ),
             }
@@ -648,18 +647,18 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
             ]
             opts.insert(0, SelectOptionDict({"value": "-1", "label": "All Matches"}))
 
-        step_schema = {vol.Required(CONF_NAME): TextSelector()}
+        step_schema = {probatio.Required(CONF_NAME): TextSelector()}
 
         if opts:
             step_schema = step_schema | {
-                vol.Required(CONF_REGEX_MATCH_INDEX): SelectSelector(
+                probatio.Required(CONF_REGEX_MATCH_INDEX): SelectSelector(
                     SelectSelectorConfig(options=opts, mode=SelectSelectorMode.DROPDOWN)
                 )
             }
 
         step_schema = step_schema | {
-            vol.Optional(CONF_VALUE_TEMPLATE): TemplateSelector(),
-            vol.Optional(CONF_UNIT_OF_MEASUREMENT): SelectSelector(
+            probatio.Optional(CONF_VALUE_TEMPLATE): TemplateSelector(),
+            probatio.Optional(CONF_UNIT_OF_MEASUREMENT): SelectSelector(
                 SelectSelectorConfig(
                     options=list(
                         {
@@ -674,7 +673,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                     sort=True,
                 ),
             ),
-            vol.Optional(CONF_DEVICE_CLASS): SelectSelector(
+            probatio.Optional(CONF_DEVICE_CLASS): SelectSelector(
                 SelectSelectorConfig(
                     options=[
                         cls.value
@@ -686,7 +685,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                     translation_key="sensor_device_class",
                 ),
             ),
-            vol.Optional(CONF_STATE_CLASS): SelectSelector(
+            probatio.Optional(CONF_STATE_CLASS): SelectSelector(
                 SelectSelectorConfig(
                     options=[cls.value for cls in SensorStateClass],
                     mode=SelectSelectorMode.DROPDOWN,
@@ -696,11 +695,11 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
             ),
         }
         if self.source == SOURCE_RECONFIGURE:
-            schema: vol.Schema = self.add_suggested_values_to_schema(
-                vol.Schema(step_schema), self._get_reconfigure_subentry().data
+            schema: probatio.Schema = self.add_suggested_values_to_schema(
+                probatio.Schema(step_schema), self._get_reconfigure_subentry().data
             )
         else:
-            schema: vol.Schema = vol.Schema(step_schema)
+            schema: probatio.Schema = probatio.Schema(step_schema)
 
         return self.async_show_form(
             step_id="sensor",
@@ -722,10 +721,10 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
 
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "target/start_preview",
-        vol.Required("flow_id"): str,
-        vol.Required("flow_type"): vol.All("config_subentries_flow"),
-        vol.Required("user_input"): dict,
+        probatio.Required("type"): "target/start_preview",
+        probatio.Required("flow_id"): str,
+        probatio.Required("flow_type"): probatio.All("config_subentries_flow"),
+        probatio.Required("user_input"): dict,
     }
 )
 @websocket_api.async_response
@@ -964,7 +963,7 @@ def _validate_step_sensor(
             val_tmp: Template = Template(value_temp, hass)
             variables: TemplateVarsType = {"value": value}
             value = val_tmp.async_render(variables=variables, parse_result=False)
-        except vol.Invalid as ex:
+        except probatio.Invalid as ex:
             errors[CONF_VALUE_TEMPLATE] = str(ex.msg)
         except TemplateError as ex:
             errors[CONF_VALUE_TEMPLATE] = str(ex)
@@ -973,12 +972,12 @@ def _validate_step_sensor(
     # Validate the unit of measurement
     try:
         config_flow._validate_unit(config)  # noqa: SLF001
-    except vol.Invalid as ex:
+    except probatio.Invalid as ex:
         errors[CONF_UNIT_OF_MEASUREMENT] = str(ex.msg)
     # Validate the state class
     try:
         config_flow._validate_state_class(config)  # noqa: SLF001
-    except vol.Invalid as ex:
+    except probatio.Invalid as ex:
         errors[CONF_STATE_CLASS] = str(ex.msg)
     if errors:
         return errors, None

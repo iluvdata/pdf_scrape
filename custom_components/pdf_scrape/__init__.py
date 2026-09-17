@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components.file_upload import process_uploaded_file
 from homeassistant.config_entries import ConfigEntry
@@ -111,22 +111,32 @@ async def async_setup(hass: HomeAssistant, config_type: ConfigType) -> bool:
 
     def _only_one(data: list[str]) -> list[str]:
         if len(data) != 1:
-            raise vol.Invalid("Only one device/configuration entry can be specified.")
+            raise probatio.Invalid(
+                "Only one device/configuration entry can be specified."
+            )
         return data
 
     def _one_of(data: dict[str, Any]) -> dict[str, Any]:
         if data.get(ATTR_DEVICE_ID) and data.get(ATTR_CONFIG_ENTRY_ID):
-            raise vol.Invalid("Specify either device_id or config_entry_id, not both.")
+            raise probatio.Invalid(
+                "Specify either device_id or config_entry_id, not both."
+            )
         if not data.get(ATTR_DEVICE_ID) and not data.get(ATTR_CONFIG_ENTRY_ID):
-            raise vol.Invalid("Either device_id or config_entry_id must be specified.")
+            raise probatio.Invalid(
+                "Either device_id or config_entry_id must be specified."
+            )
         return data
 
-    schema: vol.Schema = vol.Schema(
-        vol.All(
+    schema: probatio.Schema = probatio.Schema(
+        probatio.All(
             {
-                vol.Optional(ATTR_CONFIG_ENTRY_ID): vol.All(cv.ensure_list, _only_one),
-                vol.Optional(ATTR_DEVICE_ID): vol.All(cv.ensure_list, _only_one),
-                vol.Required(CONF_FILE): FileSelector(
+                probatio.Optional(ATTR_CONFIG_ENTRY_ID): probatio.All(
+                    cv.ensure_list, _only_one
+                ),
+                probatio.Optional(ATTR_DEVICE_ID): probatio.All(
+                    cv.ensure_list, _only_one
+                ),
+                probatio.Required(CONF_FILE): FileSelector(
                     FileSelectorConfig(accept="application/pdf,.pdf")
                 ),
             },

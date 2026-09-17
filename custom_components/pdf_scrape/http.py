@@ -31,7 +31,7 @@ class PDFView(HomeAssistantView):
 
     async def head(self, request: web.Request, entry_id: str) -> web.Response:
         """Head just for length and last-modified."""
-        entry: PDFScrapeConfigEntry = self._get_entry_and_authenticatey(
+        entry: PDFScrapeConfigEntry = self._get_entry_and_authenticate(
             request, entry_id
         )
         path: str = self.hass.config.path(STORAGE_DIR, DOMAIN, f"{entry_id}.pdf")
