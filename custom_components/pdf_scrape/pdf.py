@@ -10,7 +10,7 @@ from io import BytesIO
 import logging
 from pathlib import Path
 import re
-from typing import Any, Final, override
+from typing import Any, Final, cast, override
 
 from httpx import HTTPStatusError, RequestError, Response
 from PIL import Image
@@ -24,7 +24,7 @@ from homeassistant.util.dt import utcnow
 
 from .const import DOMAIN
 
-STORE_VERSION: Final[int] = 1
+STORE_VERSION: Final[int] = 2
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -70,16 +70,19 @@ class _PDFStore(Store[PDF]):
     @override
     async def _async_migrate_func(
         self, old_major_version: Any, old_minor_version: Any, old_data: Any
-    ) -> PDF:
+    ) -> Any:
         if old_major_version != STORE_VERSION:
             data: dict[str, Any] = {**old_data}
-            data.pop("md5_checksum")
-            pages: list[str] = data.pop("pages")
-            data["page_count"] = len(pages)
-            data["pages"] = {}
-            for i, page in enumerate(pages):
-                data["pages"][i + 1] = page
-            return PDF.model_validate(data)
+            if "md5_checksum" in data:
+                data.pop("md5_checksum")
+            pages_obj = data["pages"]
+            if isinstance(pages_obj, list):
+                data.pop("pages")
+                data["pages"] = {}
+                for i, page in enumerate(cast(list[str], pages_obj)):
+                    data["pages"][i + 1] = page
+                data["page_count"] = len(data["pages"])
+            return data
         raise StoredFileError(f"Unable to migrate to store version {STORE_VERSION}")
 
 

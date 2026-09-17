@@ -74,10 +74,13 @@ class PDFDocumentSensor(CoordinatorEntity[PDFScrapeCoordinator], SensorEntity): 
     @cached_property
     def extra_state_attributes(self) -> dict[str, str]:
         """Return Extra Attributes."""
-        return {
+        attrs = {
             CONF_MODIFIED_SOURCE: self.coordinator.pdf.pdf.modified_source,
             CONF_SHA256_CHECKSUM: self.coordinator.pdf.pdf.sha256_checksum,
         }
+        if self.coordinator.pdf.pdf.title is not None:
+            attrs["title"] = self.coordinator.pdf.pdf.title
+        return attrs
 
 
 class PDFScrapeSensor(CoordinatorEntity[PDFScrapeCoordinator], SensorEntity):  # type: ignore[reportIncompatibleVariableOverride]
