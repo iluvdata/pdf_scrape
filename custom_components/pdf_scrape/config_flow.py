@@ -101,8 +101,8 @@ _LOGGER: logging.Logger = logging.getLogger(__name__)
 class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
     """PDF Scrape Config Flow Class."""
 
-    VERSION: int = 1
-    MINOR_VERSION: int = 3
+    VERSION: int = 2
+    MINOR_VERSION: int = 1
 
     data: dict[str, str | timedelta | None] = {}
     placeholders: dict[str, str] | None = {}

@@ -306,7 +306,7 @@ async def async_migrate_entry(
 ) -> bool:
     """Migrate old entry."""
 
-    if config_entry.version == 1 and config_entry.minor_version == 2:
+    if config_entry.version == 1:
         _LOGGER.debug(
             "Migrating configuration from version %s.%s",
             config_entry.version,
@@ -316,6 +316,7 @@ async def async_migrate_entry(
             if subentry.subentry_type == "document":
                 hass.config_entries.async_remove_subentry(config_entry, subentry_id)
                 break
+        hass.config_entries.async_update_entry(config_entry, version=2, minor_version=1)
         _LOGGER.debug(
             "Migration to configuration version %s.%s successful",
             config_entry.version,

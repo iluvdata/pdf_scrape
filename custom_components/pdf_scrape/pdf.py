@@ -10,7 +10,7 @@ from io import BytesIO
 import logging
 from pathlib import Path
 import re
-from typing import Final
+from typing import Any, Final, override
 
 from httpx import HTTPStatusError, RequestError, Response
 from PIL import Image
@@ -60,9 +60,32 @@ class HTTPHeaders(BaseModel):
     content_length: int
 
 
-def get_store(hass: HomeAssistant, key: str) -> Store[PDF]:
+class _PDFStore(Store[PDF]):
+    """PDF Store."""
+
+    def __init__(self, hass: HomeAssistant, key: str) -> None:
+        """Init a store."""
+        super().__init__(hass, STORE_VERSION, key)
+
+    @override
+    async def _async_migrate_func(
+        self, old_major_version: Any, old_minor_version: Any, old_data: Any
+    ) -> PDF:
+        if old_major_version != STORE_VERSION:
+            data: dict[str, Any] = {**old_data}
+            data.pop("md5_checksum")
+            pages: list[str] = data.pop("pages")
+            data["page_count"] = len(pages)
+            data["pages"] = {}
+            for i, page in enumerate(pages):
+                data["pages"][i + 1] = page
+            return PDF.model_validate(data)
+        raise StoredFileError(f"Unable to migrate to store version {STORE_VERSION}")
+
+
+def get_store(hass: HomeAssistant, key: str) -> _PDFStore:
     """Get a store."""
-    return Store[PDF](hass, STORE_VERSION, f"{DOMAIN}_{key}")
+    return _PDFStore(hass, f"{DOMAIN}_{key}")
 
 
 class PDFScrape(ABC):
@@ -77,7 +100,7 @@ class PDFScrape(ABC):
         self._stream: BytesIO
 
         # if config_entry_id is None that means this a config flow and so just sends the file
-        self.store: Store[PDF] | None = (
+        self.store: _PDFStore | None = (
             get_store(hass, self.config_entry_id)
             if self.config_entry_id is not None
             else None
@@ -139,7 +162,7 @@ class PDFScrape(ABC):
         self.pdf.page_count = self._document.page_count
         if self.store is not None:
             if len(self.pdf.pages) > 0:
-                # already loaded pages, do we need to re-ocr them?
+                # already loaded pages, do we need to recheck?
                 await self._get_pages(set(self.pdf.pdf.pages.keys()), update=True)
             await self.save_to_store()
             # Generate a thumbnail
