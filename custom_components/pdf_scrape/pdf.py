@@ -166,7 +166,7 @@ class PDFScrape(ABC):
         if self.store is not None:
             if len(self.pdf.pages) > 0:
                 # already loaded pages, do we need to recheck?
-                await self._get_pages(set(self.pdf.pdf.pages.keys()), update=True)
+                await self._get_pages(set(self.pdf.pages.keys()), update=True)
             await self.save_to_store()
             # Generate a thumbnail
             pixmap: Pixmap = await self.hass.async_add_executor_job(
