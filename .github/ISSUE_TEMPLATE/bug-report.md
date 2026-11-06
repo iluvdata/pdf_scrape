@@ -22,6 +22,7 @@ Steps to reproduce the behavior:
 A clear and concise description of what you expected to happen.
 
 **Suggested fix**
+Add a suggested change that will address the issue.
 
 **Additional context**
 Add any other context about the problem here.
