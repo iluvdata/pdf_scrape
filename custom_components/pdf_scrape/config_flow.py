@@ -105,7 +105,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
     """PDF Scrape Config Flow Class."""
 
     VERSION: int = 2
-    MINOR_VERSION: int = 1
+    MINOR_VERSION: int = 2
 
     data: dict[str, str | timedelta | None] = {}
     placeholders: dict[str, str] | None = {}

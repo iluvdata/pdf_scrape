@@ -25,7 +25,7 @@ from homeassistant.core import (
 from homeassistant.exceptions import ConfigEntryError, ServiceValidationError
 import homeassistant.helpers.config_validation as cv
 import homeassistant.helpers.device_registry as dr
-from homeassistant.helpers.network import get_url
+import homeassistant.helpers.entity_registry as er
 from homeassistant.helpers.selector import FileSelector, FileSelectorConfig
 from homeassistant.helpers.storage import STORAGE_DIR, Store
 from homeassistant.helpers.typing import ConfigType
@@ -58,7 +58,7 @@ from .pdf import (
     get_store,
 )
 
-_PLATFORMS: list[Platform] = [Platform.IMAGE, Platform.SENSOR]
+_PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -131,10 +131,10 @@ async def async_setup(hass: HomeAssistant, config_type: ConfigType) -> bool:
         probatio.All(
             {
                 probatio.Optional(ATTR_CONFIG_ENTRY_ID): probatio.All(
-                    cv.ensure_list, _only_one
+                    probatio.EnsureList(), _only_one
                 ),
                 probatio.Optional(ATTR_DEVICE_ID): probatio.All(
-                    cv.ensure_list, _only_one
+                    probatio.EnsureList(), _only_one
                 ),
                 probatio.Required(CONF_FILE): FileSelector(
                     FileSelectorConfig(accept="application/pdf,.pdf")
@@ -184,10 +184,7 @@ async def async_setup(hass: HomeAssistant, config_type: ConfigType) -> bool:
         """Wrapper function for blocking code."""
         if path.exists():
             for file in path.iterdir():
-                if (
-                    file.suffix in [".pdf", ".webp"]
-                    and file.stem not in config_entry_ids
-                ):
+                if file.suffix == ".pdf" and file.stem not in config_entry_ids:
                     _LOGGER.warning(
                         "Removing orphaned file: %s.  Note: This is not an error but indicates that the file is not associated with any config entry",
                         file,
@@ -238,10 +235,10 @@ async def async_setup_entry(
                                 """Wrapper function for blocking code."""
                                 if path.exists():
                                     for file in path.iterdir():
-                                        if file.stem == temp_key and file.suffix in [
-                                            ".pdf",
-                                            ".webp",
-                                        ]:
+                                        if (
+                                            file.stem == temp_key
+                                            and file.suffix == ".pdf"
+                                        ):
                                             new_name = (
                                                 f"{config_entry.entry_id}{file.suffix}"
                                             )
@@ -268,25 +265,6 @@ async def async_setup_entry(
         await coordinator.async_config_entry_first_refresh()
 
         config_entry.runtime_data = coordinator
-
-        device_info = dr.DeviceInfo(
-            identifiers={(DOMAIN, config_entry.entry_id)},
-            name=config_entry.title,
-            entry_type=dr.DeviceEntryType.SERVICE,
-            configuration_url=f"{get_url(config_entry.runtime_data.hass)}/api/pdf_scrape/pdf/{config_entry.entry_id}.pdf?token={config_entry.runtime_data.access_token}",
-        )
-        match config_entry.data[CONF_TYPE]:
-            case ConfType.LOCAL:
-                device_info["model"] = config_entry.data[CONF_FILE]
-            case ConfType.HTTP:
-                device_info["configuration_url"] = config_entry.data[CONF_URL]
-                device_info["model"] = config_entry.data[CONF_URL]
-            case ConfType.UPLOAD:
-                device_info["model"] = config_entry.title
-        dev_reg = dr.async_get(hass)
-        dev_reg.async_get_or_create(
-            config_entry_id=config_entry.entry_id, **device_info
-        )
 
         await hass.config_entries.async_forward_entry_setups(config_entry, _PLATFORMS)
 
@@ -322,6 +300,38 @@ async def async_migrate_entry(
             config_entry.version,
             config_entry.minor_version,
         )
+    if config_entry.version == 2:
+        _LOGGER.debug(
+            "Migrating configuration from version %s.%s",
+            config_entry.version,
+            config_entry.minor_version,
+        )
+
+        def remove_thumbails() -> None:
+            """Wrapper with blocking code."""
+            path: Path = Path(hass.config.path(STORAGE_DIR))
+            if path.exists():
+                for file in path.iterdir():
+                    if file.suffix == ".webp":
+                        file.unlink()
+
+        await hass.async_add_executor_job(remove_thumbails)
+        registry = er.async_get(hass)
+        for remove_entity in [
+            entity
+            for entity in er.async_entries_for_config_entry(
+                registry, config_entry.entry_id
+            )
+            if entity.domain == Platform.IMAGE.value
+        ]:
+            registry.async_remove(remove_entity.id)
+
+        hass.config_entries.async_update_entry(config_entry, version=2, minor_version=2)
+        _LOGGER.debug(
+            "Migration to configuration version %s.%s successful",
+            config_entry.version,
+            config_entry.minor_version,
+        )
 
     return True
 
@@ -341,7 +351,7 @@ def async_cleanup(hass: HomeAssistant, entry_or_flow_id: str) -> None:
         """Wrapper function for blocking code."""
         if await hass.async_add_executor_job(path.exists):
             for file in await hass.async_add_executor_job(path.iterdir):
-                if file.stem == entry_or_flow_id and file.suffix in [".pdf", ".webp"]:
+                if file.stem == entry_or_flow_id and file.suffix == ".pdf":
                     await hass.async_add_executor_job(file.unlink)
 
     hass.create_task(_remove_files(), f"{DOMAIN}._remove_files")

@@ -32,7 +32,7 @@ _LOGGER: logging.Logger = logging.getLogger(__name__)
 type PDFScrapeConfigEntry = ConfigEntry[PDFScrapeCoordinator]
 
 
-class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
+class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str | None]]):
     """Data coordinator to download and parse the files."""
 
     def __init__(
@@ -57,7 +57,7 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
         self.http_error_count: int = 0
         self.access_token: str = hex(SystemRandom().getrandbits(256))[2:]
 
-    async def _async_update_data(self) -> dict[str, str]:
+    async def _async_update_data(self) -> dict[str, str | None]:
         """Perform the update."""
         try:
             if not self.data or await self.pdf.update():
@@ -65,7 +65,7 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
                     if subentry_conf.subentry_type == "document":
                         continue
 
-                    txt: str = ""
+                    txt: str | None = None
                     try:
                         txt = await self.pdf.get_pages(
                             subentry_conf.data[CONF_PDF_PAGES]
@@ -95,8 +95,10 @@ class PDFScrapeCoordinator(DataUpdateCoordinator[dict[str, str]]):
                                         "regex": subentry_conf.data[CONF_REGEX_SEARCH]
                                     },
                                     config_subentry=subentry_conf,
+                                    raise_expection=False,  # Don't raise error
                                 )
-                            if subentry_conf.data[CONF_REGEX_MATCH_INDEX] != "-1":
+                                txt = None
+                            elif subentry_conf.data[CONF_REGEX_MATCH_INDEX] != "-1":
                                 txt = matches[
                                     int(subentry_conf.data[CONF_REGEX_MATCH_INDEX])
                                 ]
@@ -206,6 +208,7 @@ def async_raise_error(
     translation_placeholders: dict[str, Any] | None = None,
     config_subentry: ConfigSubentry | None = None,
     error_type: ConfigEntryError | UpdateFailed = ConfigEntryError,
+    raise_expection: bool = True,
 ) -> None:
     """Log issues, create repairs, and raise exceptions."""
 
@@ -235,14 +238,15 @@ def async_raise_error(
         translation_key=error_key,
         translation_placeholders=translation_placeholders,
     )
-    if exception is not None:
+    if raise_expection:
+        if exception is not None:
+            raise error_type(
+                translation_domain=DOMAIN,
+                translation_key=error_key,
+                translation_placeholders=translation_placeholders,
+            ) from exception
         raise error_type(
             translation_domain=DOMAIN,
             translation_key=error_key,
             translation_placeholders=translation_placeholders,
-        ) from exception
-    raise error_type(
-        translation_domain=DOMAIN,
-        translation_key=error_key,
-        translation_placeholders=translation_placeholders,
-    )
+        )
