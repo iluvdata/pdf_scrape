@@ -15,11 +15,8 @@ from homeassistant.components.file_upload import process_uploaded_file
 from homeassistant.components.select import DOMAIN as SELECT_DOMAIN, SelectEntity
 from homeassistant.components.sensor import (
     CONF_STATE_CLASS,
-    DEVICE_CLASS_UNITS,
     DOMAIN as SENSOR_DOMAIN,
-    SensorDeviceClass,
     SensorEntity,
-    SensorStateClass,
 )
 from homeassistant.components.template import config_flow
 from homeassistant.config_entries import (
@@ -42,6 +39,7 @@ from homeassistant.const import (
     CONF_TYPE,
     CONF_UNIT_OF_MEASUREMENT,
     CONF_URL,
+    Platform,
 )
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
@@ -54,7 +52,8 @@ from homeassistant.helpers.config_validation import (
 from homeassistant.helpers.entity import CalculatedState, Entity
 import homeassistant.helpers.issue_registry as ir
 from homeassistant.helpers.selector import (
-    BooleanSelector,
+    DeviceClassSelector,
+    DeviceClassSelectorConfig,
     DurationSelector,
     DurationSelectorConfig,
     FileSelector,
@@ -63,10 +62,14 @@ from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
+    StateClassSelector,
     TemplateSelector,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
+    UnitOfMeasurementSelector,
+    UnitOfMeasurementSelectorConfig,
+    UnitOfMeasurementSelectorContext,
 )
 from homeassistant.helpers.template import Template, TemplateError, TemplateVarsType
 
@@ -463,13 +466,10 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
             if not re.match(REGEX_PAGE_RANGE_PATTERN, user_input[CONF_PDF_PAGES]):
                 errors[CONF_PDF_PAGES] = "invalid_page_range"
             self.data[CONF_PDF_PAGES] = user_input[CONF_PDF_PAGES]
-            self.data[CONF_OCR] = user_input[CONF_OCR]
 
             self._progress_task = self.get_config_entry().async_create_task(
                 self.hass,
-                self.pdf.get_pages(
-                    user_input[CONF_PDF_PAGES], bool(user_input.get(CONF_OCR, False))
-                ),
+                self.pdf.get_pages(user_input[CONF_PDF_PAGES]),
                 "step_user_get_pages",
                 True,
             )
@@ -494,12 +494,10 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                 )
 
         default_pages: str = "1"
-        ocr: bool = False
         if self.source == SOURCE_RECONFIGURE:
             default_pages = str(
                 self._get_reconfigure_subentry().data.get(CONF_PDF_PAGES, 0)
             )
-            ocr = self._get_reconfigure_subentry().data.get(CONF_OCR, False)
         return self.async_show_form(
             step_id="user",
             data_schema=probatio.Schema(
@@ -507,7 +505,6 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                     probatio.Required(
                         CONF_PDF_PAGES, default=default_pages
                     ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
-                    probatio.Optional(CONF_OCR, default=ocr): BooleanSelector(),
                 }
             ),
             description_placeholders={
@@ -529,9 +526,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
     ) -> SubentryFlowResult:
         """Get the regex."""
         errors: dict[str, str] = {}
-        text: str = await self.pdf.get_pages(
-            self.data[CONF_PDF_PAGES], self.data[CONF_OCR]
-        )
+        text: str = await self.pdf.get_pages(self.data[CONF_PDF_PAGES])
 
         if user_input and CONF_REGEX_SEARCH in user_input:
             # Validate that it's a valid regex
@@ -570,7 +565,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
             data_schema=schema,
             description_placeholders={
                 "title": self._get_entry().title,
-                CONF_PDF_PAGES: self.data[CONF_PDF_PAGES],
+                "pdf_pages": self.data[CONF_PDF_PAGES],
             },
             last_step=False,
             errors=errors,
@@ -658,40 +653,17 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
 
         step_schema = step_schema | {
             probatio.Optional(CONF_VALUE_TEMPLATE): TemplateSelector(),
-            probatio.Optional(CONF_UNIT_OF_MEASUREMENT): SelectSelector(
-                SelectSelectorConfig(
-                    options=list(
-                        {
-                            str(unit)
-                            for units in DEVICE_CLASS_UNITS.values()
-                            for unit in units
-                            if unit is not None
-                        }
-                    ),
-                    mode=SelectSelectorMode.DROPDOWN,
-                    custom_value=True,
-                    sort=True,
-                ),
+            probatio.Optional(CONF_DEVICE_CLASS): DeviceClassSelector(
+                DeviceClassSelectorConfig(domain=Platform.SENSOR)
             ),
-            probatio.Optional(CONF_DEVICE_CLASS): SelectSelector(
-                SelectSelectorConfig(
-                    options=[
-                        cls.value
-                        for cls in SensorDeviceClass
-                        if cls != SensorDeviceClass.ENUM
-                    ],
-                    mode=SelectSelectorMode.DROPDOWN,
-                    sort=True,
-                    translation_key="sensor_device_class",
-                ),
-            ),
-            probatio.Optional(CONF_STATE_CLASS): SelectSelector(
-                SelectSelectorConfig(
-                    options=[cls.value for cls in SensorStateClass],
-                    mode=SelectSelectorMode.DROPDOWN,
-                    sort=True,
-                    translation_key="sensor_state_class",
-                ),
+            probatio.Optional(CONF_STATE_CLASS): StateClassSelector(),
+            probatio.Optional(CONF_UNIT_OF_MEASUREMENT): UnitOfMeasurementSelector(
+                UnitOfMeasurementSelectorConfig(
+                    context=UnitOfMeasurementSelectorContext(
+                        filter_device_class=CONF_DEVICE_CLASS,
+                        filter_state_class=CONF_STATE_CLASS,
+                    )
+                )
             ),
         }
         if self.source == SOURCE_RECONFIGURE:

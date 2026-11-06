@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from asyncio import Task, TaskGroup
-import datetime
+import datetime as dt
 from enum import StrEnum
 from functools import partial
 from hashlib import file_digest
@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 from typing import Any, Final, cast, override
 
-from httpx import HTTPStatusError, RequestError, Response
+from httpx2 import HTTPStatusError, RequestError, Response
 from PIL import Image
 from pydantic import BaseModel, Field
 from pymupdf import Document, Pixmap, TextPage
@@ -43,7 +43,7 @@ class ModifiedDateSource(StrEnum):
 class PDF(BaseModel):
     """Class for the stored file in storage."""
 
-    modified: datetime.datetime | None = None
+    modified: dt.datetime | None = None
     title: str | None = None
     sha256_checksum: str | None = None
     modified_source: ModifiedDateSource | None = None
@@ -56,7 +56,7 @@ class PDF(BaseModel):
 class HTTPHeaders(BaseModel):
     """Class for HTTP headers (to avoid constantly fetching the entire pdf)."""
 
-    last_modified: datetime.datetime
+    last_modified: dt.datetime
     content_length: int
 
 
@@ -117,7 +117,7 @@ class PDFScrape(ABC):
 
     async def _process_pdf(
         self,
-        alt_timestamp: tuple[datetime.datetime, ModifiedDateSource] | None = None,
+        alt_timestamp: tuple[dt.datetime, ModifiedDateSource] | None = None,
     ) -> bool:
         """(Re)load a pdf from a url.
 
@@ -127,7 +127,7 @@ class PDFScrape(ABC):
         self._document = await self.hass.async_add_executor_job(
             partial(Document, stream=self._stream)
         )
-        modified: datetime.datetime | None = None
+        modified: dt.datetime | None = None
         title: str | None = None
         if self._document.metadata:
             if "title" in self._document.metadata:
@@ -138,11 +138,11 @@ class PDFScrape(ABC):
                     self._document.metadata["modDate"],
                 )
                 if matches:
-                    modified = datetime.datetime.strptime(
+                    modified = dt.datetime.strptime(
                         f"{matches.group(1)}{matches.group(2)}", "%Y%m%d%H%M%S%z"
                     )
                     self.pdf.modified_source = ModifiedDateSource.PDF_METADATA
-                    modified.replace(tzinfo=datetime.UTC)
+                    modified.replace(tzinfo=dt.UTC)
         if modified is None and alt_timestamp is not None:
             modified, self.pdf.modified_source = alt_timestamp
         self._stream.seek(0)  # reset pointer
@@ -281,7 +281,7 @@ class PDFScrape(ABC):
 
         return await self.hass.async_add_executor_job(wrap_extract_text)
 
-    async def get_pages(self, page_range: str, ocr: bool = False) -> str:
+    async def get_pages(self, page_range: str) -> str:
         """Parse page range string into list of page numbers."""
         page_nums: set[int] = set()
         for part in page_range.split(","):
@@ -293,7 +293,7 @@ class PDFScrape(ABC):
                 page_nums.add(int(part))
         if max(page_nums) > self.pdf.page_count or min(page_nums) < 1:
             raise IndexError("Page number out of range")
-        await self._get_pages(page_nums, ocr)
+        await self._get_pages(page_nums)
         return "\n".join(self.pdf.pages[page - 1] or "" for page in sorted(page_nums))
 
 
@@ -355,7 +355,7 @@ class PDFScrapeHTTP(PDFScrape):
                     last_modified=convert_header_date(r.headers["last-modified"]),
                     content_length=int(r.headers.get("content-length")),
                 )
-                alt_modified: datetime
+                alt_modified: dt.datetime
                 alt_modified_source: ModifiedDateSource
                 if self.pdf.http_headers.last_modified is not None:
                     alt_modified = self.pdf.http_headers.last_modified
@@ -368,10 +368,10 @@ class PDFScrapeHTTP(PDFScrape):
             raise HTTPError(str(err)) from err
 
 
-def convert_header_date(date_str: str) -> datetime.datetime:
+def convert_header_date(date_str: str) -> dt.datetime:
     """Convert HTTP header date to datetime."""
-    return datetime.datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S %Z").replace(
-        tzinfo=datetime.UTC
+    return dt.datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S %Z").replace(
+        tzinfo=dt.UTC
     )
 
 
@@ -405,9 +405,9 @@ class PDFScrapeFile(PDFScrape):
         """Check for an update."""
         if self.file is not None:
             try:
-                modified: datetime = datetime.datetime.fromtimestamp(
+                modified = dt.datetime.fromtimestamp(
                     (await self.hass.async_add_job_executor(self.file.stat)).st_mtime,
-                    datetime.UTC,
+                    dt.UTC,
                 )
                 with await self.hass.async_add_executor_job(
                     partial(self.file.open, mode="rb")

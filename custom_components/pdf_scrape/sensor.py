@@ -6,7 +6,6 @@ from homeassistant.components.sensor import (
     CONF_STATE_CLASS,
     SensorDeviceClass,
     SensorEntity,
-    cached_property,
 )
 from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import (
@@ -66,12 +65,12 @@ class PDFDocumentSensor(CoordinatorEntity[PDFScrapeCoordinator], SensorEntity): 
         """Handle updated data from the coordinator."""
         self.async_write_ha_state()
 
-    @cached_property
+    @property
     def native_value(self) -> datetime | None:
         """Return the state of the sensor."""
         return self.coordinator.pdf.pdf.modified
 
-    @cached_property
+    @property
     def extra_state_attributes(self) -> dict[str, str]:
         """Return Extra Attributes."""
         attrs = {
@@ -111,7 +110,7 @@ class PDFScrapeSensor(CoordinatorEntity[PDFScrapeCoordinator], SensorEntity):  #
         """Handle updated data from the coordinator."""
         self.async_write_ha_state()
 
-    @cached_property
+    @property
     def native_value(self) -> str:
         """Return the state of the sensor."""
         value: str = self.coordinator.data[self.subentry_id]
