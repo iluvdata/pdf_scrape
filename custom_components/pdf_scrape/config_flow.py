@@ -352,6 +352,7 @@ class PDFScrapeConfigFlow(ConfigFlow, domain=DOMAIN):
                 },
             )
         return self.async_show_form(
+            step_id="upload",
             data_schema=flow_schema,
             errors=errors,
         )
