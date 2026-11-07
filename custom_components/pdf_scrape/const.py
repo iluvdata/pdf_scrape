@@ -16,7 +16,6 @@ CONF_SHA256_CHECKSUM: Final = "sha256_checksum"
 CONF_MODIFIED: Final[str] = "modified"
 CONF_MODIFIED_SOURCE: Final[str] = "modified_source"
 CONF_FILE: Final[str] = "file"
-CONF_OCR: Final[str] = "ocr"
 
 
 class ErrorTypes(StrEnum):

@@ -158,7 +158,7 @@
       "message": "Page(s) {pages} doesn't appear to exist in {conf}"
     },
     "no_matches": {
-      "message": "No matches found using {regex} on {conf}"
+      "message": "No matches found using `{regex}` on {conf}"
     },
     "pattern_error": {
       "message": "Regex pattern error: {msg} using {regex} on {conf}"

@@ -117,7 +117,7 @@ class PDFScrape(ABC):
         self,
         alt_timestamp: tuple[dt.datetime, ModifiedDateSource] | None = None,
     ) -> bool:
-        """(Re)load a pdf from a url.
+        """(Re)load a pdf from a stream.
 
         returns true if the pdf was updated (either modified date or checksum), false if not.
         """
@@ -212,7 +212,11 @@ class PDFScrape(ABC):
 
     async def _load_document_from_file_or_cache(self) -> None:
         """Load the document from file or cache."""
-        if hasattr(self, "_pdf_reader") and self._pdf_reader is not None:
+        if (
+            hasattr(self, "_pdf_reader")
+            and self._pdf_reader is not None
+            and self._pdf_reader.get_num_pages() > 0
+        ):
             return
         if hasattr(self, "file"):
             await self._load_stream_from_file(self.file)

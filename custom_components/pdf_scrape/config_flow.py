@@ -78,7 +78,6 @@ from .const import (
     CONF_DEFAULT_SCAN_INTERVAL,
     CONF_FILE,
     CONF_MIN_SCAN_INTERVAL,
-    CONF_OCR,
     CONF_PDF_PAGES,
     CONF_REGEX_MATCH_INDEX,
     CONF_REGEX_SEARCH,
@@ -552,9 +551,12 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                 probatio.Optional(CONF_REGEX_SEARCH): TextSelector(
                     TextSelectorConfig(multiline=True)
                 ),
-                probatio.Required("page_text", default=text): TextSelector(
-                    TextSelectorConfig(multiline=True, read_only=True)
-                ),
+                probatio.Required(
+                    "page_text",
+                    default=text
+                    if len(text) < 100000
+                    else f"{text[:100000]} ---TRUNCATED---",
+                ): TextSelector(TextSelectorConfig(multiline=True, read_only=True)),
             }
         )
         if self.source == SOURCE_RECONFIGURE:
@@ -767,7 +769,7 @@ async def ws_start_preview(
                 await flow.preview_task
             flow.preview_task = flow.get_config_entry().async_create_task(
                 hass,
-                pdf.get_pages(pages, bool(user_input.get(CONF_OCR, False))),
+                pdf.get_pages(pages),
                 "pdf_preview_pages",
                 True,
             )
