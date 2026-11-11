@@ -202,7 +202,7 @@ class PDFScrape(ABC):
             if page_index not in self.pdf.pages or update:
                 await self._load_document_from_file_or_cache()
                 self.pdf.pages[page_index] = self._pdf_reader.pages[
-                    page_num - 1
+                    page_index
                 ].extract_text(extraction_mode="layout")
 
     async def _load_stream_from_file(self, file: Path) -> None:
