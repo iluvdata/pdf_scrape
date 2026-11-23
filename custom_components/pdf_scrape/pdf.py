@@ -77,7 +77,7 @@ class _PDFStore(Store[PDF]):
                 data.pop("pages")
                 data["pages"] = {}
                 for i, page in enumerate(cast(list[str], pages_obj)):
-                    data["pages"][i + 1] = page
+                    data["pages"][i] = page
                 data["page_count"] = len(data["pages"])
             return data
         raise StoredFileError(f"Unable to migrate to store version {STORE_VERSION}")
@@ -148,14 +148,18 @@ class PDFScrape(ABC):
             await self.close()
             _LOGGER.debug("PDF not modified since last load, skipping processing")
             return False
+        page_count = self._pdf_reader.get_num_pages()
+        if self.store is not None and self.pdf.pages:
+            # Cache keys are zero-based. A replacement document may have fewer pages.
+            indices = [index for index in self.pdf.pages if 0 <= index < page_count]
+            self.pdf.pages = await self.hass.async_add_executor_job(
+                self._extract_pages, indices
+            )
         self.pdf.modified = modified
         self.pdf.sha256_checksum = sha256_checksum
         self.pdf.title = title
-        self.pdf.page_count = self._pdf_reader.get_num_pages()
+        self.pdf.page_count = page_count
         if self.store is not None:
-            if len(self.pdf.pages) > 0:
-                # already loaded pages, do we need to recheck?
-                await self._get_pages(set(self.pdf.pages.keys()))
             await self.save_to_store()
             pdf_storage_path: Path = Path(
                 self.hass.config.path(
@@ -197,13 +201,18 @@ class PDFScrape(ABC):
 
     async def _get_pages(self, page_nums: set[int], update: bool = True) -> None:
         """Get txt on a pages."""
-        for page_num in page_nums:
-            page_index = page_num - 1
-            if page_index not in self.pdf.pages or update:
-                await self._load_document_from_file_or_cache()
-                self.pdf.pages[page_index] = self._pdf_reader.pages[
-                    page_index
-                ].extract_text(extraction_mode="layout")
+        indices = [n - 1 for n in page_nums if update or n - 1 not in self.pdf.pages]
+        if indices:
+            await self._load_document_from_file_or_cache()
+            self.pdf.pages.update(
+                await self.hass.async_add_executor_job(self._extract_pages, indices)
+            )
+
+    def _extract_pages(self, indices: list[int]) -> dict[int, str]:
+        return {
+            index: self._pdf_reader.pages[index].extract_text(extraction_mode="layout")
+            for index in indices
+        }
 
     async def _load_stream_from_file(self, file: Path) -> None:
         """Load the file into a stream."""
