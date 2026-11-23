@@ -9,6 +9,6 @@
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/iluvdata/pdf_scrape/issues",
-  "requirements": ["pypdf==7.0.0"],
-  "version": "2026.11.1"
+  "requirements": ["pypdf==7.1.1"],
+  "version": "2026.11.3"
 }
